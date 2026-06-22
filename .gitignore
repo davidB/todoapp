@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+
+# local mise overrides
+mise.local.toml
+
+# editor / agent local files
+.env.local
+.envrc

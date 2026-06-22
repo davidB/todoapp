@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.0.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/davidB/todoapp"
+authors = ["David Bernard"]
+
+[workspace.dependencies]
+tda-core = { path = "crates/tda-core" }
+tda-app = { path = "crates/tda-app" }
+tda-store-mem = { path = "crates/tda-store-mem" }

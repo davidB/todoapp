@@ -1,0 +1,11 @@
+[package]
+name = "tda-core"
+description = "tda domain core: entities, capabilities, ports. No I/O deps (see spec §5)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# tda-core MUST stay free of I/O / framework crates (enforced by `mise run lint`).
+[dependencies]

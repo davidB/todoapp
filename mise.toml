@@ -1,0 +1,48 @@
+#:tombi schema.strict = false
+
+[settings]
+experimental = true
+
+[tools]
+rust = { version = "1.96.0", profile = "minimal", components = "rustfmt,clippy" }
+
+[tasks."build"]
+description = "compile the workspace"
+run = "cargo --locked build --workspace"
+
+[tasks."test"]
+description = "run the test suite"
+run = "cargo --locked test --workspace"
+
+[tasks."format"]
+alias = "fmt"
+description = "format the code"
+run = "cargo --locked fmt"
+
+[tasks."lint"]
+description = "clippy (warnings = errors) + core-no-io guard"
+depends = ["lint:core-no-io"]
+run = "cargo --locked clippy --workspace --all-targets --all-features --no-deps -- -D warnings"
+
+[tasks."lint:core-no-io"]
+description = "enforce spec §5: tda-core has no I/O / framework deps"
+hide = true
+# ponytail: grep guard; switch to cargo-deny [bans] if tda-core's allowed deps grow.
+run = """
+cargo --locked tree -p tda-core --edges normal --prefix none \
+  | rg -iw 'tokio|libsql|axum|clap|ratatui|crossterm|reqwest|hyper|rmcp|bevy_ecs' \
+  && { echo 'tda-core must not depend on I/O / framework crates (spec §5)'; exit 1; } || exit 0
+"""
+
+[tasks."autofix"]
+description = "auto-fix lints, then format"
+depends_post = ["format"]
+run = [
+  "cargo fix --allow-dirty --workspace --all-targets",
+  "cargo clippy --fix --allow-dirty --workspace --all-targets --all-features --no-deps",
+]
+
+[tasks."ci"]
+description = "the full CI gate"
+depends = ["lint", "test"]
+run = "cargo --locked fmt --check"
