@@ -30,7 +30,7 @@ hide = true
 # ponytail: grep guard; switch to cargo-deny [bans] if tda-core's allowed deps grow.
 run = """
 cargo --locked tree -p tda-core --edges normal --prefix none \
-  | rg -iw 'tokio|libsql|axum|clap|ratatui|crossterm|reqwest|hyper|rmcp|bevy_ecs' \
+  | rg -iw 'tokio|turso|libsql|axum|clap|ratatui|crossterm|reqwest|hyper|rmcp|bevy_ecs' \
   && { echo 'tda-core must not depend on I/O / framework crates (spec §5)'; exit 1; } || exit 0
 """
 
