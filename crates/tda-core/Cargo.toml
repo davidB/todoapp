@@ -8,4 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 # tda-core MUST stay free of I/O / framework crates (enforced by `mise run lint`).
+# serde (derive) + derive_more are serialization/error helpers, not I/O — allowed.
 [dependencies]
+serde.workspace = true
+derive_more.workspace = true

@@ -13,3 +13,10 @@ authors = ["David Bernard"]
 tda-core = { path = "crates/tda-core" }
 tda-app = { path = "crates/tda-app" }
 tda-store-mem = { path = "crates/tda-store-mem" }
+
+# Not I/O: serialization + error boilerplate only (see spec §5 dependency rule).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+derive_more = { version = "2", features = ["display", "error", "from"] }
+insta = { version = "1", features = ["json"] }
+proptest = "1"

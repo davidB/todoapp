@@ -9,3 +9,11 @@ authors.workspace = true
 
 [dependencies]
 tda-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+derive_more.workspace = true
+
+[dev-dependencies]
+tda-store-mem.workspace = true
+insta.workspace = true
+proptest.workspace = true

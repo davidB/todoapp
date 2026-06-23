@@ -1,3 +1,11 @@
-//! tda domain core — entities, capability components, and ports.
+//! tda domain core — entities, capability components, the decider, and ports.
 //!
-//! Empty in M0; filled in M1. No I/O dependencies (spec §5).
+//! Zero I/O dependencies (spec §5): only `serde` (serialization) and `derive_more`.
+
+mod command;
+mod model;
+mod ports;
+
+pub use command::*;
+pub use model::*;
+pub use ports::*;
