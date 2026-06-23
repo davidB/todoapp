@@ -117,15 +117,10 @@ Grouped and given IDs so the roadmap can reference them.
 
 **[DECISION] Hexagonal (ports & adapters), domain core has zero I/O dependencies.** This is the part of your notes I'd lock in hardest — it's what makes the "core first, adapters later, fully tested" plan possible.
 
-**[DECISION] Composition-first domain (capabilities-as-components), with the *storage engine* as a swappable adapter.** Composition is the modeling principle (see [§3](#3-core-concepts-glossary)) regardless of engine. Whether the in-memory store is plain composed Rust structs or a `bevy_ecs` `World` lives **behind** the repository ports, so it can be chosen — and changed — without touching the core. This is *not* an all-or-nothing, now-or-never decision.
+**[DECISION] Composition-first domain (capabilities-as-components), ECS as *inspiration*, not a dependency.** Composition is the modeling principle (see [§3](#3-core-concepts-glossary)): a minimal `Task` identity with capability components attached à la carte, mirrored by the table-per-capability storage in [§7](#7-data-model-turso-adapter). This is the good half of ECS — composition over inheritance — taken as a design pattern. We do **not** pull in an ECS engine (`bevy_ecs` or otherwise): no second in-memory `World` to sync against the durable store, no engine runtime in the core.
 
-- **Build `tda-store-mem` (plain composed structs) first.** Simplest path to prove the model and get the conformance suite green.
-- **Evaluate `bevy_ecs` as `tda-store-ecs` via a spike** ([§10, Spike-ECS](#spike-ecs--evaluate-bevy_ecs-as-a-store-adapter)) once the ports + conformance suite exist, so the comparison is on real code.
-- **Updated facts on Bevy** (its relationship story changed since the original notes): custom relationships are now first-class (define `child` and `blocks` as separate relationship types), and child order *is* preserved (a relationship target can be a `Vec<Entity>`). The old "no ordering" worry no longer applies. `bevy_ecs` runs standalone (no renderer/app runner; `no_std`-capable).
-- **The two real costs to weigh in the spike**, not Bevy's hierarchy API:
-  1. **Many-to-many isn't native** — a relationship points to a single entity, so the multi-parent DAG (`FR-5`) is modeled as *junction/edge entities* carrying `from`/`to`/`kind`/`position`, i.e. the same `link` model as [§7](#7-data-model-libsql-adapter), just expressed in ECS.
-  2. **Two-world sync** — Turso is the durable source of truth; a Bevy `World` would be a *second* in-memory model to keep in sync with it. For a load-subtree → mutate → persist workload, that sync is the main cost; ECS pays off most with many entities × systems per tick, which this isn't (yet).
-- **Recommendation:** ship v1 on the plain composed store; adopt `bevy_ecs` only if the spike shows a concrete ergonomic/perf win. Full Bevy (app + render) is out of scope for the core.
+- The in-memory store (`tda-store-mem`) is plain composed Rust — component maps keyed by `TaskId` (`HashMap<TaskId, Status>`, …), which is the ECS data shape without the framework. It sits behind the same repository ports as the Turso store, so it stays a swappable adapter.
+- If a real need for ECS-style systems/queries ever appears, it can be added later as just another store adapter behind the ports — the composition model already leaves the door open, with nothing to undo.
 
 ### Workspace layout (Cargo workspace)
 
@@ -134,9 +129,8 @@ tda/
 ├─ crates/
 │  ├─ tda-core/        # domain: entities, value objects, services, PORTS (traits). No I/O deps.
 │  ├─ tda-app/         # use cases / application services orchestrating core + ports
-│  ├─ tda-store-libsql/# adapter: persistence via libSQL/Turso (impls the repo ports)
-│  ├─ tda-store-mem/   # adapter: in-memory store, plain composed structs (tests + fast dev)
-│  ├─ tda-store-ecs/   # adapter (OPTIONAL/spike): in-memory store backed by bevy_ecs
+│  ├─ tda-store-turso/ # adapter: persistence via the `turso` crate (impls the repo ports)
+│  ├─ tda-store-mem/   # adapter: in-memory store, plain composed components (tests + fast dev)
 │  ├─ tda-cli/         # adapter: clap-based CLI binary
 │  ├─ tda-tui/         # adapter: ratatui TUI binary
 │  ├─ tda-api/         # adapter: axum HTTP+JSON server
@@ -149,7 +143,7 @@ tda/
 
 ### Ports (traits the core defines, adapters implement)
 
-- `TaskRepository` — CRUD on tasks.
+- `TaskRepository` — create/delete the minimal entity; attach/detach individual capability components; **load by projection** — a caller names the capability set it needs (`[Title, Status]` for a tree row, all of them for a detail pane), so heavy components like `Notes` are read only when requested. This is what makes the [§7](#7-data-model-turso-adapter) table-split pay off.
 - `LinkRepository` — create/remove/reorder links; query children, parents, dependents.
 - `CollectionRepository` — saved trees & saved queries.
 - `QueryEngine` — evaluate a `Query` (filter + sort) over the store; returns task refs with their breadcrumb paths. Pure given a store snapshot, so it's directly unit-testable.
@@ -157,6 +151,8 @@ tda/
 - `IdGenerator` — injected IDs (deterministic tests).
 
 Use cases (in `tda-app`) are the only callers of ports. Adapters never call each other.
+
+**Async boundary.** The `turso` crate is async (tokio), so the **repository ports are `async` traits** and use cases are `async`. The domain core stays synchronous and pure: `decide`/`apply` ([§5a](#5a-commands-the-decider-pattern)) and `QueryEngine` evaluation take an in-memory snapshot and return values — no `async`, no I/O. So a use case = `await` loads via ports → pure `decide`/`apply` → `await` persists. The `tda-store-mem` adapter implements the same async traits trivially.
 
 ### Dependency rule
 `adapters → app → core`. Nothing in `core` imports an adapter or a concrete framework. Enforce with a workspace check (e.g. a CI grep / `cargo-deny`-style rule that `tda-core/Cargo.toml` has no I/O crates).
@@ -180,7 +176,7 @@ fn apply(state: TaskState, event: Event) -> TaskState;
 - **`apply`** folds events into new state. Adapters then persist via the ports.
 
 **Right-sized on purpose** (your "fast + simple to extend" constraint). This is the *decider pattern*, **not** full CQRS/event-sourcing:
-- one libSQL store, queried directly — **no** separate read/write models or projections;
+- one Turso store, queried directly — **no** separate read/write models or projections;
 - events are the internal result of a command, applied straight to state — **no** required event log (add one later for undo/audit without rearchitecting);
 - a plain function call — **no** message bus or async command queue.
 
@@ -193,25 +189,25 @@ Cost of the whole mechanism: one `Command` enum, one `Event` enum, two pure func
 | Concern | Choice | Notes |
 |---|---|---|
 | Language | **Rust** | Per your notes; good for CLI/TUI/perf. |
-| Persistence | **libSQL / Turso** (`libsql` crate, embedded/local file) | Embedded SQLite-compatible. Local-first; cloud sync optional much later. |
+| Persistence | **Turso** (`turso` crate, embedded in-process, local file) | The Rust rewrite of SQLite (MVCC, async I/O); SQLite-compatible SQL so the schema is unchanged. Async (needs `tokio`). Currently **beta** — acceptable for a personal dogfood tool; watch for rough edges. |
 | Migrations | Embedded SQL migrations (simple runner, e.g. `refinery` or hand-rolled) | Keep schema versioned from M2. |
-| IDs | **UUIDv7** (`uuid` crate) or **ULID** (`ulid`) | Sortable, collision-free, agent-friendly. **[DECISION]** UUIDv7. |
+| IDs | **ULID** (`ulid` crate) + git-style short display prefix | 128-bit, time-sortable, compact (26-char base32). **Stable random** id assigned at creation — *not* a content hash/CID (content mutates; a content hash would change on every edit). Random 128-bit ⇒ safe DB merge. **[DECISION]** ULID; UUIDv7 is the interop-safe fallback. |
 | Serialization | `serde` + `serde_json` | Export/import + API. |
-| Errors | `thiserror` in libs, `anyhow` in binaries | |
+| Errors | `derive_more` (`Error`/`Display`/`From` derives) in libs, `anyhow` in binaries | Replaces `thiserror`; same ergonomics via derives, plus the other `derive_more` conveniences. |
 | CLI | `clap` (derive) | `FR-18`. |
 | TUI | `ratatui` + `crossterm` | `FR-19`. |
 | HTTP API | `axum` | `FR-20`. |
 | MCP | `rmcp` (official Rust MCP SDK) | `FR-21`; exposes tasks as agent tools. |
 | Testing | std `#[test]`, `insta` (snapshots), `proptest` (ordering/DAG invariants) | |
-| In-memory store (optional) | `bevy_ecs` (standalone, no full Bevy) | Only if the [Spike-ECS](#spike-ecs--evaluate-bevy_ecs-as-a-store-adapter) shows a win. Behind a port; not on the v1 critical path. |
+| Async runtime | `tokio` | Required by `turso`; also used by `axum` (API) and the MCP server. |
 
 ---
 
-## 7. Data model (libSQL adapter)
+## 7. Data model (Turso adapter)
 
 The `blocks` DAG, the single-parent `child` tree, and per-view ordering are the load-bearing decisions; everything else is conventional.
 
-**Composition mapping.** The capabilities from [§3](#3-core-concepts-glossary) map to storage the same way they compose in memory: identity in `task`, and each *optional* capability is sparse — a nullable column (cheap in SQLite) or its own table when it warrants one (`tag`, `assignment` already are). Adding a future capability = a new column/table + its component, with zero change to existing ones. This keeps the plain-struct store and a potential `bevy_ecs` store as straightforward projections of the same component set.
+**Composition mapping — one table per capability.** The capabilities from [§3](#3-core-concepts-glossary) are stored the same way they compose in memory: a **minimal `task` entity** (id + timestamps) plus **one component table per capability**, keyed by `task_id`. **The presence of a row *is* the capability** — there is no "absent vs unknown" ambiguity, and add/remove = insert/delete. A new capability is a new table, touching nothing existing. List/tree views join only the components they render (`task ⋈ c_title ⋈ c_status`) and never load `c_notes`. The `tda-store-mem` component maps and these capability tables are two projections of the same component set (component map ⟷ component table) — the ECS-inspired shape, no engine required.
 
 ```sql
 -- Actors: humans and agents
@@ -221,17 +217,27 @@ CREATE TABLE actor (
   name      TEXT NOT NULL
 );
 
+-- Minimal entity: identity only. Everything else is a capability component.
 CREATE TABLE task (
-  id          TEXT PRIMARY KEY,
-  title       TEXT NOT NULL,
-  notes       TEXT,                     -- Markdown
-  status      TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','todo','wip','done')),
-  due_date    TEXT,                     -- ISO-8601, optional
-  eta_minutes INTEGER,                  -- own estimate, optional
-  time_spent_minutes INTEGER NOT NULL DEFAULT 0,
+  id          TEXT PRIMARY KEY,   -- random immutable id; short unique prefix shown (see §6 / ID note)
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
+
+-- Capability components: 1:1 with task, row exists iff the task HAS the capability.
+CREATE TABLE c_title    ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, title TEXT NOT NULL );
+CREATE TABLE c_status   ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
+                          status TEXT NOT NULL CHECK (status IN ('draft','todo','wip','done')) );
+CREATE TABLE c_notes    ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, notes TEXT NOT NULL ); -- Markdown, lazy-loaded
+CREATE TABLE c_schedule ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, due_date TEXT NOT NULL ); -- ISO-8601
+CREATE TABLE c_estimate ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, eta_minutes INTEGER NOT NULL );
+CREATE TABLE c_timespent( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, minutes INTEGER NOT NULL );
+-- Multi-valued capability components:
+CREATE TABLE c_tag        ( task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, tag TEXT NOT NULL,
+                            PRIMARY KEY (task_id, tag) );
+CREATE INDEX tag_by_name ON c_tag(tag);
+CREATE TABLE c_assignment ( task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, actor_id TEXT NOT NULL,
+                            claimed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (task_id, actor_id) );
 
 -- Typed, ORDERED edges. `blocks` is many-to-many (DAG).
 -- `child` is single-parent (tree): the `one_parent` index enforces ≤1 incoming `child` link per to_id.
@@ -253,20 +259,6 @@ CREATE TABLE collection (         -- saved trees & saved queries
   kind  TEXT NOT NULL CHECK (kind IN ('tree','query')),
   spec  TEXT                       -- for kind='query': JSON {filter, sort, params}; NULL for trees
 );
-
-CREATE TABLE tag (
-  task_id TEXT NOT NULL,
-  tag     TEXT NOT NULL,
-  PRIMARY KEY (task_id, tag)
-);
-CREATE INDEX tag_by_name ON tag(tag);
-
-CREATE TABLE assignment (
-  task_id  TEXT NOT NULL,
-  actor_id TEXT NOT NULL,
-  claimed  INTEGER NOT NULL DEFAULT 0,  -- 1 ⇒ this actor claimed it
-  PRIMARY KEY (task_id, actor_id)
-);
 ```
 
 Notes:
@@ -274,6 +266,7 @@ Notes:
 - **Cycle prevention:** `child` is a tree — reject a re-parent if the new parent is a descendant of the moved task. `blocks` is a DAG — reject a new `blocks` edge that would close a cycle. Cover both with a `proptest`.
 - **Aggregation (`FR-13`)** is computed by traversing `child` links from a task; cache later if needed.
 - **Curated list = shallow tree.** A hand-built "list" is a `child`-tree rooted at a virtual root node; no separate membership mechanism.
+- **Identity & mergeability.** `task.id` is an immutable random ULID — assigned once, never derived from content, so edits never change it and links never dangle (the jj *change-id* model, vs a content hash that would churn). For the multi-DB merge case (e.g. CDviz across repos), prefix the id with a short **per-database namespace** (`cdviz_01J9Z…`): random ULIDs already won't collide, but the namespace carries provenance and keeps short-prefix lookups unambiguous across merged sources. A future optional `content_hash` (blake3 of the task's canonical content) would let a merge detect *divergent edits* of the same id — that's a content hash used for conflict detection, kept separate from identity. Merge logic itself is post-v1, but none of these choices foreclose it.
 
 ### Query model (`FR-23`–`FR-25`)
 
@@ -374,21 +367,15 @@ Milestones are ordered, each with deliverables and acceptance criteria Claude Co
 - **Command machinery ([§5a](#5a-commands-the-decider-pattern)):** `Command` + `Event` enums and `decide`/`apply`, with per-capability guards (`Status` transitions, `Assignment` claim rules, `blocks` start-gate). Statically composed, no dynamic bus.
 - Use cases in `tda-app` (each = build command → `decide` → `apply` → persist via ports): create, batch-create, edit, move/reorder (subtree), link (with **cycle rejection**), tag, assign, claim, status transitions, aggregate subtree (per-capability roll-ups), **evaluate query (filter + sort, with breadcrumb paths) + built-in queries (`what-next`, `what-next-for`, `due-today`)**, export-to-{md,json}, import.
 - Tests: unit per command incl. **denial paths** (claim a draft, claim by non-assignee, start while blocked); `proptest` for tree/`blocks`-DAG invariants and ordering; query tests per predicate + sort; `insta` snapshots for export.
-- **Done when:** `FR-1`–`FR-17`, `FR-23`–`FR-25` provable against the in-memory store with no `libsql`/UI/HTTP dependency anywhere in `core`/`app`.
+- **Done when:** `FR-1`–`FR-17`, `FR-23`–`FR-25` provable against the in-memory store with no `turso`/UI/HTTP dependency anywhere in `core`/`app`.
 
-### M2 — Persistence (libSQL/Turso)
-- `tda-store-libsql` implementing all repo ports; versioned migrations matching [§7](#7-data-model-libsql-adapter).
-- A test suite that runs the **same** use-case tests from M1 against the libSQL store (port conformance suite).
-- **Done when:** every M1 use case passes against an on-disk libSQL database; round-trip export→import is identity.
-
-### Spike-ECS — evaluate `bevy_ecs` as a store adapter
-*Optional, time-boxed (~2–3 days). Run only if you want to settle the ECS question with code.* Prereq: the M2 port-conformance suite.
-- Implement `tda-store-ecs` against the same repo ports using a standalone `bevy_ecs` `World`: tasks as entities, capabilities as components, `child`/`blocks` as custom relationships, multi-parent via junction/edge entities.
-- Run the **same conformance suite** against it; measure: lines/complexity vs `tda-store-mem`, reorder/move ergonomics, and the cost of syncing the `World` with the libSQL source of truth.
-- **Done when:** a go/no-go note exists. Adopt `bevy_ecs` for the in-memory store only on a clear win; otherwise keep the plain composed store. Either way the core is untouched.
+### M2 — Persistence (Turso)
+- `tda-store-turso` implementing all (async) repo ports via the `turso` crate; versioned migrations matching [§7](#7-data-model-turso-adapter).
+- A test suite that runs the **same** use-case tests from M1 against the Turso store (port conformance suite).
+- **Done when:** every M1 use case passes against an on-disk Turso database; round-trip export→import is identity.
 
 ### M3 — Dogfood milestone (the self-hosting roadmap)
-- `tda-cli` exposing the [§9](#9-cli-surface-sketch-for-tda-cli) surface, backed by libSQL, with `--json` everywhere.
+- `tda-cli` exposing the [§9](#9-cli-surface-sketch-for-tda-cli) surface, backed by Turso, with `--json` everywhere.
 - `tda import` ingests this very file (Markdown task list) into a tree; `tda export` reproduces it.
 - **Done when:** you can run `tda import tda-spec.md` and then manage these milestones inside `tda` itself. **This is the "working ToDoApp that can store the roadmap" you asked for.**
 
@@ -411,7 +398,7 @@ Milestones are ordered, each with deliverables and acceptance criteria Claude Co
 ## 11. Testing strategy
 
 - **Core/app:** pure unit tests; deterministic via injected `Clock`/`IdGenerator`. Property tests for the two invariants that will bite hardest: DAG acyclicity and ordering correctness under inserts/moves.
-- **Port conformance suite:** one parametrized test set run against *both* `tda-store-mem` and `tda-store-libsql`. Adding a new store later means just passing this suite.
+- **Port conformance suite:** one parametrized test set run against *both* `tda-store-mem` and `tda-store-turso`. Adding a new store later means just passing this suite.
 - **Snapshots (`insta`):** Markdown/JSON export — catches format regressions and proves round-trip.
 - **Adapters:** thin integration tests; keep logic out of adapters so there's little to test there.
 
@@ -419,7 +406,7 @@ Milestones are ordered, each with deliverables and acceptance criteria Claude Co
 
 ## 12. Definition of done — v1
 
-v1 ships at **M3 + M4**: a keyboard-driven CLI **and** TUI over a libSQL store, supporting arbitrary-depth hierarchy (single-parent tree) with a `blocks` dependency DAG, manual ordering, tags, query/search views ("what next", "due today"), assignees/claiming, the draft→done lifecycle, subtree aggregation, and Markdown/JSON round-trip — and able to host its own roadmap. M5/M6 are post-v1.
+v1 ships at **M3 + M4**: a keyboard-driven CLI **and** TUI over a Turso store, supporting arbitrary-depth hierarchy (single-parent tree) with a `blocks` dependency DAG, manual ordering, tags, query/search views ("what next", "due today"), assignees/claiming, the draft→done lifecycle, subtree aggregation, and Markdown/JSON round-trip — and able to host its own roadmap. M5/M6 are post-v1.
 
 ---
 
@@ -440,4 +427,4 @@ These are *not* resolved by the decisions above — they need your input (Claude
 
 ## 14. First instruction to give Claude Code
 
-> Read `tda-spec.md`. Execute **M0** then **M1** only. Set up the Cargo workspace per §5, then implement the domain core and use cases per §3–§9 against an in-memory store, with the full test suite from §11. Do **not** add libSQL, CLI, TUI, or HTTP yet. Treat the §5 dependency rule as inviolable: nothing in `tda-core`/`tda-app` may depend on an adapter or I/O crate. Stop after M1 with a green `cargo test` and a short summary of the use cases implemented.
+> Read `tda-spec.md`. Execute **M0** then **M1** only. Set up the Cargo workspace per §5, then implement the domain core and use cases per §3–§9 against an in-memory store, with the full test suite from §11. Do **not** add Turso, CLI, TUI, or HTTP yet. Treat the §5 dependency rule as inviolable: nothing in `tda-core`/`tda-app` may depend on an adapter or I/O crate. Stop after M1 with a green `cargo test` and a short summary of the use cases implemented.
