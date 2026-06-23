@@ -3,14 +3,16 @@
 
 use std::cmp::Ordering;
 
-use tda_core::{Dir, DueFilter, Filter, Id, Query, SortField, SortKey, Status, Task};
+use tda_core::{
+    Dir, DueFilter, Filter, Id, Projection, Query, SortField, SortKey, Status, TaskState,
+};
 
 use crate::service::Services;
 
 /// A task in a query result, with its ancestor titles (root → parent).
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryHit {
-    pub task: Task,
+    pub task: TaskState,
     pub path: Vec<String>,
 }
 
@@ -25,8 +27,13 @@ impl<'a> Services<'a> {
         // All async work (breadcrumb + priority key) happens here, before the
         // sort: `sort_by` is sync, so each hit carries its precomputed
         // tree-priority key for the comparator.
+        // Query predicates touch notes/tags/assignments/due, so each candidate
+        // is loaded `Full` (spec §7: `all` returns ids, callers project).
         let mut hits: Vec<(QueryHit, Vec<f64>)> = Vec::new();
-        for t in self.tasks.all().await {
+        for id in self.tasks.all().await {
+            let Some(t) = self.tasks.load(&id, Projection::Full).await else {
+                continue;
+            };
             if !self.matches(&t, &q.filter, &today, within.as_ref()) {
                 continue;
             }
@@ -102,7 +109,7 @@ impl<'a> Services<'a> {
 
     fn matches(
         &self,
-        t: &Task,
+        t: &TaskState,
         f: &Filter,
         today: &str,
         within: Option<&std::collections::HashSet<Id>>,
@@ -149,7 +156,7 @@ impl<'a> Services<'a> {
         let mut chain = Vec::new();
         let mut cur = self.parent_of(id).await;
         while let Some(pid) = cur {
-            if let Some(t) = self.tasks.get(&pid).await {
+            if let Some(t) = self.tasks.load(&pid, Projection::Row).await {
                 chain.push(t.title.clone());
                 cur = self.parent_of(&pid).await;
             } else {

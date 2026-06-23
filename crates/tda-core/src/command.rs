@@ -1,19 +1,19 @@
 //! The decider pattern (spec §5a): `decide` runs a command through an ordered
 //! list of pure guards, then emits events; `apply` folds events into state.
 //!
-//! Scope: the *task-local* lifecycle commands live here, where a single `Task`
+//! Scope: the *task-local* lifecycle commands live here, where a single `TaskState`
 //! plus a tiny [`DecideCtx`] is enough to decide. Structural commands (move,
 //! link) need the graph and so are validated in `tda-app` — that's where the
 //! tree/DAG live. Both still flow through guard-style checks (FR-26).
 
-use crate::model::{Assignment, Id, Status, Task};
+use crate::model::{Assignment, Id, Status, TaskState};
 
 /// A refused command, with a human/agent-readable reason (spec §5a).
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 #[display("{_0}")]
 pub struct Denied(#[error(not(source))] pub String);
 
-/// Intent to mutate one task. (`Create` is [`Task::new`], not a command.)
+/// Intent to mutate one task. (`Create` is [`TaskState::new`], not a command.)
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     SetTitle(String),
@@ -53,12 +53,12 @@ pub struct DecideCtx {
     pub blocked: bool,
 }
 
-type Guard = fn(&Task, &Command, &DecideCtx) -> Option<Denied>;
+type Guard = fn(&TaskState, &Command, &DecideCtx) -> Option<Denied>;
 
 /// Ordered guards; first denial wins (spec §13 Q2 default).
 const GUARDS: &[Guard] = &[g_status_transition, g_blocked_start, g_claim_rules];
 
-pub fn decide(task: &Task, cmd: &Command, ctx: &DecideCtx) -> Result<Vec<Event>, Denied> {
+pub fn decide(task: &TaskState, cmd: &Command, ctx: &DecideCtx) -> Result<Vec<Event>, Denied> {
     for guard in GUARDS {
         if let Some(denied) = guard(task, cmd, ctx) {
             return Err(denied);
@@ -67,7 +67,7 @@ pub fn decide(task: &Task, cmd: &Command, ctx: &DecideCtx) -> Result<Vec<Event>,
     Ok(events_for(task, cmd))
 }
 
-pub fn apply(task: &mut Task, event: &Event) {
+pub fn apply(task: &mut TaskState, event: &Event) {
     match event {
         Event::TitleSet(t) => task.title = t.clone(),
         Event::NotesSet(n) => task.notes = n.clone(),
@@ -100,7 +100,7 @@ pub fn apply(task: &mut Task, event: &Event) {
 }
 
 /// Map an allowed command to its events. No-ops (idempotent re-sets) yield `[]`.
-fn events_for(task: &Task, cmd: &Command) -> Vec<Event> {
+fn events_for(task: &TaskState, cmd: &Command) -> Vec<Event> {
     match cmd {
         Command::SetTitle(t) if &task.title == t => vec![],
         Command::SetTitle(t) => vec![Event::TitleSet(t.clone())],
@@ -132,7 +132,7 @@ fn events_for(task: &Task, cmd: &Command) -> Vec<Event> {
 
 /// `Status` capability: only single steps along `draft↔todo↔wip↔done` (a re-set
 /// to the same value is a no-op, allowed here and dropped by `events_for`).
-fn g_status_transition(task: &Task, cmd: &Command, _: &DecideCtx) -> Option<Denied> {
+fn g_status_transition(task: &TaskState, cmd: &Command, _: &DecideCtx) -> Option<Denied> {
     if let Command::SetStatus(to) = cmd
         && (task.status.rank() - to.rank()).abs() > 1
     {
@@ -145,7 +145,7 @@ fn g_status_transition(task: &Task, cmd: &Command, _: &DecideCtx) -> Option<Deni
 }
 
 /// `blocks` system: cannot start (`→wip`, via SetStatus or Claim) while blocked.
-fn g_blocked_start(_: &Task, cmd: &Command, ctx: &DecideCtx) -> Option<Denied> {
+fn g_blocked_start(_: &TaskState, cmd: &Command, ctx: &DecideCtx) -> Option<Denied> {
     let starting = matches!(cmd, Command::SetStatus(Status::Wip) | Command::Claim(_));
     if ctx.blocked && starting {
         return Some(Denied("blocked: a blocker is not done".into()));
@@ -155,7 +155,7 @@ fn g_blocked_start(_: &Task, cmd: &Command, ctx: &DecideCtx) -> Option<Denied> {
 
 /// `Assignment` capability: claim only from `todo`; if assignees exist, only a
 /// listed one may claim (FR-11, §8).
-fn g_claim_rules(task: &Task, cmd: &Command, _: &DecideCtx) -> Option<Denied> {
+fn g_claim_rules(task: &TaskState, cmd: &Command, _: &DecideCtx) -> Option<Denied> {
     if let Command::Claim(actor) = cmd {
         if task.status != Status::Todo {
             return Some(Denied("claim allowed only from todo".into()));
@@ -172,8 +172,8 @@ mod tests {
     use super::*;
     use crate::model::Timestamp;
 
-    fn task(status: Status) -> Task {
-        Task::new(Id::new("t1"), "x", status, Timestamp(0))
+    fn task(status: Status) -> TaskState {
+        TaskState::new(Id::new("t1"), "x", status, Timestamp(0))
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Capture, edit, structure, and delegation use cases (FR-1..FR-12).
 
-use tda_core::{Command, Id, Link, LinkKind, Position, Status, Task};
+use tda_core::{Command, Id, Link, LinkKind, Position, Status, TaskState};
 
 use crate::service::{Error, Services};
 
@@ -18,11 +18,11 @@ impl<'a> Services<'a> {
         parent: Option<&Id>,
         status: Status,
         tags: impl IntoIterator<Item = String>,
-    ) -> Result<Task, Error> {
-        let mut task = Task::new(self.ids.next_id(), title, status, self.clock.now());
+    ) -> Result<TaskState, Error> {
+        let mut task = TaskState::new(self.ids.next_id(), title, status, self.clock.now());
         task.tags = tags.into_iter().collect();
         let id = task.id.clone();
-        self.tasks.put(task.clone()).await;
+        self.tasks.save(&task).await;
         if let Some(p) = parent {
             self.attach(&id, p, None).await?;
         }
@@ -31,7 +31,7 @@ impl<'a> Services<'a> {
 
     /// FR-1: batch-create from text, indentation (2 spaces or a tab) = depth
     /// (spec §13 Q7 default). Returns tasks in document order.
-    pub async fn batch_create(&self, text: &str) -> Result<Vec<Task>, Error> {
+    pub async fn batch_create(&self, text: &str) -> Result<Vec<TaskState>, Error> {
         let mut created = Vec::new();
         // stack[d] = id of the most recent task at depth d (its children sit at d+1).
         let mut stack: Vec<Id> = Vec::new();
@@ -54,38 +54,38 @@ impl<'a> Services<'a> {
 
     // ---- task-local edits (thin wrappers over the decider) ----------------
 
-    pub async fn set_title(&self, id: &Id, title: impl Into<String>) -> Result<Task, Error> {
+    pub async fn set_title(&self, id: &Id, title: impl Into<String>) -> Result<TaskState, Error> {
         self.run(id, Command::SetTitle(title.into())).await
     }
-    pub async fn set_notes(&self, id: &Id, notes: Option<String>) -> Result<Task, Error> {
+    pub async fn set_notes(&self, id: &Id, notes: Option<String>) -> Result<TaskState, Error> {
         self.run(id, Command::SetNotes(notes)).await
     }
-    pub async fn set_status(&self, id: &Id, status: Status) -> Result<Task, Error> {
+    pub async fn set_status(&self, id: &Id, status: Status) -> Result<TaskState, Error> {
         self.run(id, Command::SetStatus(status)).await
     }
-    pub async fn set_due(&self, id: &Id, due: Option<String>) -> Result<Task, Error> {
+    pub async fn set_due(&self, id: &Id, due: Option<String>) -> Result<TaskState, Error> {
         self.run(id, Command::SetSchedule(due)).await
     }
-    pub async fn set_estimate(&self, id: &Id, minutes: Option<u32>) -> Result<Task, Error> {
+    pub async fn set_estimate(&self, id: &Id, minutes: Option<u32>) -> Result<TaskState, Error> {
         self.run(id, Command::SetEstimate(minutes)).await
     }
-    pub async fn add_time_spent(&self, id: &Id, minutes: u32) -> Result<Task, Error> {
+    pub async fn add_time_spent(&self, id: &Id, minutes: u32) -> Result<TaskState, Error> {
         self.run(id, Command::AddTimeSpent(minutes)).await
     }
-    pub async fn add_tag(&self, id: &Id, tag: impl Into<String>) -> Result<Task, Error> {
+    pub async fn add_tag(&self, id: &Id, tag: impl Into<String>) -> Result<TaskState, Error> {
         self.run(id, Command::AddTag(tag.into())).await
     }
-    pub async fn remove_tag(&self, id: &Id, tag: impl Into<String>) -> Result<Task, Error> {
+    pub async fn remove_tag(&self, id: &Id, tag: impl Into<String>) -> Result<TaskState, Error> {
         self.run(id, Command::RemoveTag(tag.into())).await
     }
-    pub async fn assign(&self, id: &Id, actor: Id) -> Result<Task, Error> {
+    pub async fn assign(&self, id: &Id, actor: Id) -> Result<TaskState, Error> {
         self.run(id, Command::Assign(actor)).await
     }
-    pub async fn unassign(&self, id: &Id, actor: Id) -> Result<Task, Error> {
+    pub async fn unassign(&self, id: &Id, actor: Id) -> Result<TaskState, Error> {
         self.run(id, Command::Unassign(actor)).await
     }
     /// FR-11: claim a `todo` task (open if unassigned, else assignee-only).
-    pub async fn claim(&self, id: &Id, actor: Id) -> Result<Task, Error> {
+    pub async fn claim(&self, id: &Id, actor: Id) -> Result<TaskState, Error> {
         self.run(id, Command::Claim(actor)).await
     }
 

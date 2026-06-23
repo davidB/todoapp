@@ -1,6 +1,6 @@
 [package]
 name = "tda-store-mem"
-description = "tda in-memory store adapter (plain composed structs) for tests + fast dev."
+description = "tda in-memory store adapter (per-capability component maps) for tests + fast dev."
 edition.workspace = true
 version.workspace = true
 license.workspace = true

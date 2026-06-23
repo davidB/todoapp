@@ -2,7 +2,7 @@
 //! the human/agent task-list form (title + checkbox status + indentation depth).
 
 use serde::{Deserialize, Serialize};
-use tda_core::{Id, Link, LinkKind, Status, Task};
+use tda_core::{Id, Link, LinkKind, Projection, Status, TaskState};
 
 use crate::service::{Error, Services};
 
@@ -10,7 +10,7 @@ use crate::service::{Error, Services};
 /// among them. Deterministically ordered so `export → import → export` is stable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Export {
-    pub tasks: Vec<Task>,
+    pub tasks: Vec<TaskState>,
     pub links: Vec<Link>,
 }
 
@@ -20,9 +20,9 @@ impl<'a> Services<'a> {
         let mut ids = self.descendants(root).await;
         ids.insert(root.clone());
 
-        let mut tasks: Vec<Task> = Vec::new();
+        let mut tasks: Vec<TaskState> = Vec::new();
         for id in &ids {
-            if let Some(t) = self.tasks.get(id).await {
+            if let Some(t) = self.tasks.load(id, Projection::Full).await {
                 tasks.push(t);
             }
         }
@@ -57,8 +57,8 @@ impl<'a> Services<'a> {
     pub async fn import_json(&self, json: &str) -> Result<(), Error> {
         let export: Export =
             serde_json::from_str(json).map_err(|e| Error::Import(e.to_string()))?;
-        for task in export.tasks {
-            self.tasks.put(task).await;
+        for task in &export.tasks {
+            self.tasks.save(task).await;
         }
         for link in export.links {
             self.links.put(link).await;
@@ -90,7 +90,7 @@ impl<'a> Services<'a> {
 
     /// FR-17: parse a Markdown task list into a tree (indent = depth). Status
     /// comes from the checkbox (`[x]` → done, else todo). Returns the roots.
-    pub async fn import_md(&self, md: &str) -> Result<Vec<Task>, Error> {
+    pub async fn import_md(&self, md: &str) -> Result<Vec<TaskState>, Error> {
         let mut roots = Vec::new();
         let mut stack: Vec<Id> = Vec::new();
         for raw in md.lines() {

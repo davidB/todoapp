@@ -18,7 +18,7 @@
 
 use async_trait::async_trait;
 
-use crate::model::{Collection, Id, Link, LinkKind, Task, Timestamp};
+use crate::model::{Collection, Id, Link, LinkKind, TaskState, Timestamp};
 
 /// Injected time source — deterministic in tests.
 pub trait Clock {
@@ -32,13 +32,32 @@ pub trait IdGenerator {
     fn next_id(&self) -> Id;
 }
 
+/// Which capability components to assemble when loading a task (spec §5
+/// load-by-projection: a caller names the set it needs, so heavy components
+/// like `Notes` are read only when wanted).
+///
+/// ponytail: two projections cover M1 (tree rows want title+status; mutations
+/// and query/aggregate want everything). Widen to an explicit capability set
+/// only when a third view needs a different slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Projection {
+    /// Identity + required capabilities (`title`, `status`) only — tree/list rows.
+    Row,
+    /// Identity + every capability — detail panes and any mutation.
+    Full,
+}
+
 #[async_trait(?Send)]
 pub trait TaskRepository {
-    async fn get(&self, id: &Id) -> Option<Task>;
-    /// Insert or replace by id.
-    async fn put(&self, task: Task);
+    /// Assemble the task to `projection`, or `None` if it has no identity.
+    async fn load(&self, id: &Id, projection: Projection) -> Option<TaskState>;
+    /// Upsert (create or update): write identity + the capability components
+    /// present in `state`, detaching any that are absent. The minimal entity
+    /// (id + timestamps) and presence-as-capability live here (spec §7).
+    async fn save(&self, state: &TaskState);
     async fn delete(&self, id: &Id);
-    async fn all(&self) -> Vec<Task>;
+    /// Ids of every stored task; callers `load` the projection they need.
+    async fn all(&self) -> Vec<Id>;
 }
 
 #[async_trait(?Send)]

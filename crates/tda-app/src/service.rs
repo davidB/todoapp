@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use tda_core::{
     Clock, CollectionRepository, Command, DecideCtx, Denied, Id, IdGenerator, LinkKind,
-    LinkRepository, Status, Task, TaskRepository, apply, decide,
+    LinkRepository, Projection, Status, TaskRepository, TaskState, apply, decide,
 };
 
 pub struct Services<'a> {
@@ -32,9 +32,12 @@ pub enum Error {
 }
 
 impl<'a> Services<'a> {
-    pub async fn load(&self, id: &Id) -> Result<Task, Error> {
+    /// Load the full task (all capabilities) — for mutations, aggregation, and
+    /// detail. Read-only callers that need only `title`/`status` use a `Row`
+    /// projection directly (e.g. [`Self::is_blocked`]).
+    pub async fn load(&self, id: &Id) -> Result<TaskState, Error> {
         self.tasks
-            .get(id)
+            .load(id, Projection::Full)
             .await
             .ok_or_else(|| Error::NotFound(id.clone()))
     }
@@ -60,7 +63,7 @@ impl<'a> Services<'a> {
         for l in self.links.incoming(id, LinkKind::Blocks).await {
             if self
                 .tasks
-                .get(&l.from)
+                .load(&l.from, Projection::Row)
                 .await
                 .is_some_and(|b| b.status != Status::Done)
             {
@@ -88,7 +91,7 @@ impl<'a> Services<'a> {
     }
 
     /// Run a task-local command through `decide → apply → persist` (spec §5a).
-    pub async fn run(&self, id: &Id, cmd: Command) -> Result<Task, Error> {
+    pub async fn run(&self, id: &Id, cmd: Command) -> Result<TaskState, Error> {
         let mut task = self.load(id).await?;
         let ctx = DecideCtx {
             blocked: self.is_blocked(id).await,
@@ -100,7 +103,7 @@ impl<'a> Services<'a> {
         if !events.is_empty() {
             task.updated_at = self.clock.now();
         }
-        self.tasks.put(task.clone()).await;
+        self.tasks.save(&task).await;
         Ok(task)
     }
 }

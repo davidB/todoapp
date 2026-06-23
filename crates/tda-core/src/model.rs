@@ -1,16 +1,18 @@
 //! Entities, capability components, and value objects (spec §3, §7).
 //!
-//! Composition is by *sparse fields*: a `Task` carries the optional capabilities
-//! it has (`notes`, `due_date`, …). This mirrors the §7 storage mapping (nullable
-//! columns / side tables) and is the plain-struct composition the spec calls for —
-//! no trait-object capability registry (YAGNI until a second store needs it).
+//! Storage is one component per capability (spec §7): the durable `task` entity
+//! is just identity + timestamps, and each capability is a separate component
+//! whose *presence* means the task has it. [`TaskState`] is the in-memory
+//! *aggregate* — a task assembled from the components a caller projected (see
+//! [`crate::Projection`]) — and is what `decide`/`apply` operate on.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 
-/// Stable identity for tasks, actors, collections. Opaque string (UUIDv7 in real
-/// adapters; a sequence in tests). Serializes transparently as that string.
+/// Stable identity for tasks, actors, collections. Opaque string (a random ULID
+/// in real adapters; a sequence in tests). Serializes transparently as that
+/// string.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Id(pub String);
 
@@ -91,10 +93,17 @@ pub struct Assignment {
     pub claimed: bool,
 }
 
-/// The atomic unit. Identity + required capabilities (`title`, `status`) + the
-/// optional capabilities it happens to carry.
+/// A task assembled from its components (spec §5a `TaskState`): identity +
+/// required capabilities (`title`, `status`) + whatever optional capabilities
+/// it carries. An optional field being absent (`None` / empty / `0`) *is* the
+/// "component row not present" of [§7](spec); the store decomposes back to
+/// per-capability maps on `save` and re-assembles on `load`.
+///
+/// A `TaskState` loaded with [`crate::Projection::Row`] omits the optional
+/// capabilities — read-only for that path; never `save` a `Row` projection
+/// (it would detach the unloaded components).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Task {
+pub struct TaskState {
     pub id: Id,
     pub title: String,
     pub status: Status,
@@ -104,7 +113,7 @@ pub struct Task {
     pub due_date: Option<String>,
     /// `Estimate` capability.
     pub eta_minutes: Option<u32>,
-    /// `TimeSpent` capability.
+    /// `TimeSpent` capability (`0` ⇒ absent).
     pub time_spent_minutes: u32,
     pub tags: BTreeSet<String>,
     pub assignments: Vec<Assignment>,
@@ -112,11 +121,11 @@ pub struct Task {
     pub updated_at: Timestamp,
 }
 
-impl Task {
+impl TaskState {
     /// Construct a fresh task (the `Create` command is a constructor, not a
     /// guarded mutation — nothing to deny but an empty title).
     pub fn new(id: Id, title: impl Into<String>, status: Status, at: Timestamp) -> Self {
-        Task {
+        TaskState {
             id,
             title: title.into(),
             status,
