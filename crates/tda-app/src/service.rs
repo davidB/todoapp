@@ -1,19 +1,46 @@
 //! `Services`: the bundle of ports the use cases run against, plus shared graph
 //! helpers and the `decide → apply → persist` mutation runner.
+//!
+//! `Services` is generic over the concrete component store `St` (spec §5
+//! capability-keyed access: `ComponentStore`'s generic `get::<C>` is not
+//! object-safe, so it can't be a `&dyn`). The graph/collection/clock/id ports
+//! stay `&dyn` — they have no generic methods.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
+use serde::{Deserialize, Serialize};
 use tda_core::{
-    Clock, CollectionRepository, Command, DecideCtx, Denied, Id, IdGenerator, LinkKind,
-    LinkRepository, Projection, Status, TaskRepository, TaskState, apply, decide,
+    Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, DecideCtx,
+    Denied, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, Schedule, Status, Tags,
+    TaskEntityStore, TimeSpent, Timestamp, Title, apply, decide,
 };
 
-pub struct Services<'a> {
-    pub tasks: &'a dyn TaskRepository,
+pub struct Services<'a, St> {
+    pub store: &'a St,
     pub links: &'a dyn LinkRepository,
     pub collections: &'a dyn CollectionRepository,
     pub clock: &'a dyn Clock,
     pub ids: &'a dyn IdGenerator,
+}
+
+/// A read-only view of a task assembled from its components — for query results,
+/// export, and as the return of a mutation. **Never** fed back to `decide`/`apply`
+/// (those work capability-keyed via the store); assembling here is one-way, so
+/// there is no partial-aggregate to reconcile. Decomposed back to components by
+/// [`Services::write_snapshot`] on import.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskSnapshot {
+    pub id: Id,
+    pub title: String,
+    pub status: Status,
+    pub notes: Option<String>,
+    pub due_date: Option<String>,
+    pub eta_minutes: Option<u32>,
+    pub time_spent_minutes: u32,
+    pub tags: BTreeSet<String>,
+    pub assignments: Vec<Assignment>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, derive_more::Display, derive_more::Error, derive_more::From, PartialEq)]
@@ -31,15 +58,70 @@ pub enum Error {
     Import(#[error(not(source))] String),
 }
 
-impl<'a> Services<'a> {
-    /// Load the full task (all capabilities) — for mutations, aggregation, and
-    /// detail. Read-only callers that need only `title`/`status` use a `Row`
-    /// projection directly (e.g. [`Self::is_blocked`]).
-    pub async fn load(&self, id: &Id) -> Result<TaskState, Error> {
-        self.tasks
-            .load(id, Projection::Full)
+impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
+    /// Assemble a read-only [`TaskSnapshot`] from the task's components.
+    pub async fn snapshot(&self, id: &Id) -> Result<TaskSnapshot, Error> {
+        let (created_at, updated_at) = self
+            .store
+            .meta(id)
             .await
-            .ok_or_else(|| Error::NotFound(id.clone()))
+            .ok_or_else(|| Error::NotFound(id.clone()))?;
+        Ok(TaskSnapshot {
+            id: id.clone(),
+            title: self
+                .store
+                .get::<Title>(id)
+                .await
+                .map(|t| t.0)
+                .unwrap_or_default(),
+            status: self.store.get::<Status>(id).await.unwrap_or(Status::Draft),
+            notes: self.store.get::<Notes>(id).await.map(|n| n.0),
+            due_date: self.store.get::<Schedule>(id).await.map(|s| s.0),
+            eta_minutes: self.store.get::<Estimate>(id).await.map(|e| e.0),
+            time_spent_minutes: self.store.get::<TimeSpent>(id).await.map_or(0, |t| t.0),
+            tags: self
+                .store
+                .get::<Tags>(id)
+                .await
+                .map(|t| t.0)
+                .unwrap_or_default(),
+            assignments: self
+                .store
+                .get::<Assignments>(id)
+                .await
+                .map(|a| a.0)
+                .unwrap_or_default(),
+            created_at,
+            updated_at,
+        })
+    }
+
+    /// Decompose a snapshot back into the entity + its present components
+    /// (presence-as-capability, spec §7). Used by import.
+    pub(crate) async fn write_snapshot(&self, t: &TaskSnapshot) {
+        self.store.create(&t.id, t.created_at, t.updated_at).await;
+        self.store.set(&t.id, Title(t.title.clone())).await;
+        self.store.set(&t.id, t.status).await;
+        if let Some(n) = &t.notes {
+            self.store.set(&t.id, Notes(n.clone())).await;
+        }
+        if let Some(d) = &t.due_date {
+            self.store.set(&t.id, Schedule(d.clone())).await;
+        }
+        if let Some(e) = t.eta_minutes {
+            self.store.set(&t.id, Estimate(e)).await;
+        }
+        if t.time_spent_minutes != 0 {
+            self.store.set(&t.id, TimeSpent(t.time_spent_minutes)).await;
+        }
+        if !t.tags.is_empty() {
+            self.store.set(&t.id, Tags(t.tags.clone())).await;
+        }
+        if !t.assignments.is_empty() {
+            self.store
+                .set(&t.id, Assignments(t.assignments.clone()))
+                .await;
+        }
     }
 
     /// Child links out of `parent`, ordered by position.
@@ -62,10 +144,10 @@ impl<'a> Services<'a> {
     pub async fn is_blocked(&self, id: &Id) -> bool {
         for l in self.links.incoming(id, LinkKind::Blocks).await {
             if self
-                .tasks
-                .load(&l.from, Projection::Row)
+                .store
+                .get::<Status>(&l.from)
                 .await
-                .is_some_and(|b| b.status != Status::Done)
+                .is_some_and(|s| s != Status::Done)
             {
                 return true;
             }
@@ -90,20 +172,22 @@ impl<'a> Services<'a> {
         seen
     }
 
-    /// Run a task-local command through `decide → apply → persist` (spec §5a).
-    pub async fn run(&self, id: &Id, cmd: Command) -> Result<TaskState, Error> {
-        let mut task = self.load(id).await?;
+    /// Run a task-local command through `decide → apply → persist` (spec §5a),
+    /// capability-keyed: `decide`/`apply` read and write components via the store.
+    pub async fn run(&self, id: &Id, cmd: Command) -> Result<TaskSnapshot, Error> {
+        if self.store.meta(id).await.is_none() {
+            return Err(Error::NotFound(id.clone()));
+        }
         let ctx = DecideCtx {
             blocked: self.is_blocked(id).await,
         };
-        let events = decide(&task, &cmd, &ctx)?;
+        let events = decide(self.store, id, &cmd, &ctx).await?;
         for e in &events {
-            apply(&mut task, e);
+            apply(self.store, id, e).await;
         }
         if !events.is_empty() {
-            task.updated_at = self.clock.now();
+            self.store.touch(id, self.clock.now()).await;
         }
-        self.tasks.save(&task).await;
-        Ok(task)
+        self.snapshot(id).await
     }
 }

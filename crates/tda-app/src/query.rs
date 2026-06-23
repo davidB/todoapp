@@ -4,19 +4,20 @@
 use std::cmp::Ordering;
 
 use tda_core::{
-    Dir, DueFilter, Filter, Id, Projection, Query, SortField, SortKey, Status, TaskState,
+    ComponentStore, Dir, DueFilter, Filter, Id, Query, SortField, SortKey, Status, TaskEntityStore,
+    Title,
 };
 
-use crate::service::Services;
+use crate::service::{Services, TaskSnapshot};
 
 /// A task in a query result, with its ancestor titles (root → parent).
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryHit {
-    pub task: TaskState,
+    pub task: TaskSnapshot,
     pub path: Vec<String>,
 }
 
-impl<'a> Services<'a> {
+impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     pub async fn evaluate(&self, q: &Query) -> Vec<QueryHit> {
         let today = self.clock.today();
         let within = match q.filter.within.as_ref() {
@@ -28,10 +29,10 @@ impl<'a> Services<'a> {
         // sort: `sort_by` is sync, so each hit carries its precomputed
         // tree-priority key for the comparator.
         // Query predicates touch notes/tags/assignments/due, so each candidate
-        // is loaded `Full` (spec §7: `all` returns ids, callers project).
+        // is assembled into a read-only snapshot (spec §7: `all` returns ids).
         let mut hits: Vec<(QueryHit, Vec<f64>)> = Vec::new();
-        for id in self.tasks.all().await {
-            let Some(t) = self.tasks.load(&id, Projection::Full).await else {
+        for id in self.store.all().await {
+            let Ok(t) = self.snapshot(&id).await else {
                 continue;
             };
             if !self.matches(&t, &q.filter, &today, within.as_ref()) {
@@ -109,7 +110,7 @@ impl<'a> Services<'a> {
 
     fn matches(
         &self,
-        t: &TaskState,
+        t: &TaskSnapshot,
         f: &Filter,
         today: &str,
         within: Option<&std::collections::HashSet<Id>>,
@@ -156,8 +157,8 @@ impl<'a> Services<'a> {
         let mut chain = Vec::new();
         let mut cur = self.parent_of(id).await;
         while let Some(pid) = cur {
-            if let Some(t) = self.tasks.load(&pid, Projection::Row).await {
-                chain.push(t.title.clone());
+            if let Some(t) = self.store.get::<Title>(&pid).await {
+                chain.push(t.0);
                 cur = self.parent_of(&pid).await;
             } else {
                 break;

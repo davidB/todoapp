@@ -1,8 +1,12 @@
 //! Capture, edit, structure, and delegation use cases (FR-1..FR-12).
 
-use tda_core::{Command, Id, Link, LinkKind, Position, Status, TaskState};
+use std::collections::BTreeSet;
 
-use crate::service::{Error, Services};
+use tda_core::{
+    Command, ComponentStore, Id, Link, LinkKind, Position, Status, Tags, TaskEntityStore, Title,
+};
+
+use crate::service::{Error, Services, TaskSnapshot};
 
 /// Where to drop a task among its new siblings.
 pub enum Anchor {
@@ -10,7 +14,7 @@ pub enum Anchor {
     After(Id),
 }
 
-impl<'a> Services<'a> {
+impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     /// FR-1/FR-2: create one task, optionally under `parent` (appended last).
     pub async fn create(
         &self,
@@ -18,20 +22,25 @@ impl<'a> Services<'a> {
         parent: Option<&Id>,
         status: Status,
         tags: impl IntoIterator<Item = String>,
-    ) -> Result<TaskState, Error> {
-        let mut task = TaskState::new(self.ids.next_id(), title, status, self.clock.now());
-        task.tags = tags.into_iter().collect();
-        let id = task.id.clone();
-        self.tasks.save(&task).await;
+    ) -> Result<TaskSnapshot, Error> {
+        let id = self.ids.next_id();
+        let now = self.clock.now();
+        self.store.create(&id, now, now).await;
+        self.store.set(&id, Title(title.into())).await;
+        self.store.set(&id, status).await;
+        let tags: BTreeSet<String> = tags.into_iter().collect();
+        if !tags.is_empty() {
+            self.store.set(&id, Tags(tags)).await;
+        }
         if let Some(p) = parent {
             self.attach(&id, p, None).await?;
         }
-        Ok(task)
+        self.snapshot(&id).await
     }
 
     /// FR-1: batch-create from text, indentation (2 spaces or a tab) = depth
     /// (spec §13 Q7 default). Returns tasks in document order.
-    pub async fn batch_create(&self, text: &str) -> Result<Vec<TaskState>, Error> {
+    pub async fn batch_create(&self, text: &str) -> Result<Vec<TaskSnapshot>, Error> {
         let mut created = Vec::new();
         // stack[d] = id of the most recent task at depth d (its children sit at d+1).
         let mut stack: Vec<Id> = Vec::new();
@@ -54,38 +63,42 @@ impl<'a> Services<'a> {
 
     // ---- task-local edits (thin wrappers over the decider) ----------------
 
-    pub async fn set_title(&self, id: &Id, title: impl Into<String>) -> Result<TaskState, Error> {
+    pub async fn set_title(
+        &self,
+        id: &Id,
+        title: impl Into<String>,
+    ) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetTitle(title.into())).await
     }
-    pub async fn set_notes(&self, id: &Id, notes: Option<String>) -> Result<TaskState, Error> {
+    pub async fn set_notes(&self, id: &Id, notes: Option<String>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetNotes(notes)).await
     }
-    pub async fn set_status(&self, id: &Id, status: Status) -> Result<TaskState, Error> {
+    pub async fn set_status(&self, id: &Id, status: Status) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetStatus(status)).await
     }
-    pub async fn set_due(&self, id: &Id, due: Option<String>) -> Result<TaskState, Error> {
+    pub async fn set_due(&self, id: &Id, due: Option<String>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetSchedule(due)).await
     }
-    pub async fn set_estimate(&self, id: &Id, minutes: Option<u32>) -> Result<TaskState, Error> {
+    pub async fn set_estimate(&self, id: &Id, minutes: Option<u32>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetEstimate(minutes)).await
     }
-    pub async fn add_time_spent(&self, id: &Id, minutes: u32) -> Result<TaskState, Error> {
+    pub async fn add_time_spent(&self, id: &Id, minutes: u32) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::AddTimeSpent(minutes)).await
     }
-    pub async fn add_tag(&self, id: &Id, tag: impl Into<String>) -> Result<TaskState, Error> {
+    pub async fn add_tag(&self, id: &Id, tag: impl Into<String>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::AddTag(tag.into())).await
     }
-    pub async fn remove_tag(&self, id: &Id, tag: impl Into<String>) -> Result<TaskState, Error> {
+    pub async fn remove_tag(&self, id: &Id, tag: impl Into<String>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::RemoveTag(tag.into())).await
     }
-    pub async fn assign(&self, id: &Id, actor: Id) -> Result<TaskState, Error> {
+    pub async fn assign(&self, id: &Id, actor: Id) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::Assign(actor)).await
     }
-    pub async fn unassign(&self, id: &Id, actor: Id) -> Result<TaskState, Error> {
+    pub async fn unassign(&self, id: &Id, actor: Id) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::Unassign(actor)).await
     }
     /// FR-11: claim a `todo` task (open if unassigned, else assignee-only).
-    pub async fn claim(&self, id: &Id, actor: Id) -> Result<TaskState, Error> {
+    pub async fn claim(&self, id: &Id, actor: Id) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::Claim(actor)).await
     }
 

@@ -143,7 +143,8 @@ tda/
 
 ### Ports (traits the core defines, adapters implement)
 
-- `TaskRepository` — create/delete the minimal entity; attach/detach individual capability components; **load by projection** — a caller names the capability set it needs (`[Title, Status]` for a tree row, all of them for a detail pane), so heavy components like `Notes` are read only when requested. This is what makes the [§7](#7-data-model-turso-adapter) table-split pay off.
+- `ComponentStore` — **capability-keyed access** (ECS/column-store style): `get<C>(id)`, `set<C>(id, value)`, `remove<C>(id)` read/write/detach **one capability at a time**, keyed by task `Id`. Presence of a component *is* the capability. There is **no** whole-task load/save aggregate — a caller (or a guard) touches only the capabilities it needs, so heavy components like `Notes` are read only when named. This is what makes the [§7](#7-data-model-turso-adapter) table-split pay off. **[DECISION]** capability-keyed over an assembled `Task`/projection: a partial monolith is a mess to mutate and reconcile; `store.get::<Status>(id)` is the genuine column shape. Generic `get<C>` is not object-safe, so use cases hold a concrete store (`Services<St>`), not `&dyn`.
+- `TaskEntityStore` — the minimal `task` entity: `create`/`delete` (delete cascades every component), `touch` (`updated_at`), `meta` (timestamps), `all` (ids).
 - `LinkRepository` — create/remove/reorder links; query children, parents, dependents.
 - `CollectionRepository` — saved trees & saved queries.
 - `QueryEngine` — evaluate a `Query` (filter + sort) over the store; returns task refs with their breadcrumb paths. Pure given a store snapshot, so it's directly unit-testable.
@@ -152,7 +153,7 @@ tda/
 
 Use cases (in `tda-app`) are the only callers of ports. Adapters never call each other.
 
-**Async boundary.** The `turso` crate is async (tokio), so the **repository ports are `async` traits** and use cases are `async`. The domain core stays synchronous and pure: `decide`/`apply` ([§5a](#5a-commands-the-decider-pattern)) and `QueryEngine` evaluation take an in-memory snapshot and return values — no `async`, no I/O. So a use case = `await` loads via ports → pure `decide`/`apply` → `await` persists. The `tda-store-mem` adapter implements the same async traits trivially.
+**Async boundary.** The `turso` crate is async (tokio), so the **repository ports are `async` traits** and use cases are `async`. **[DECISION — supersedes the earlier "core stays sync & pure" call]** Because capabilities are read capability-keyed on demand (`ComponentStore`, above), `decide`/`apply` ([§5a](#5a-commands-the-decider-pattern)) are themselves **`async` and take the store**: a guard `get`s only the components it inspects, and `apply` `set`s only what changed — no assembled snapshot to fold. `QueryEngine`-style evaluation still hoists its async component loads before the sync sort. The **dependency rule is unaffected**: `ComponentStore` is a *port* defined in `tda-core`; adapters implement it, so the core still imports no runtime/adapter. (Cost accepted: more loads and a non-pure `decide`; negligible for a local tool — ECS engines do far more per frame.) The `tda-store-mem` adapter implements these async traits trivially.
 
 ### Dependency rule
 `adapters → app → core`. Nothing in `core` imports an adapter or a concrete framework. Enforce with a workspace check (e.g. a CI grep / `cargo-deny`-style rule that `tda-core/Cargo.toml` has no I/O crates).
@@ -164,23 +165,25 @@ Use cases (in `tda-app`) are the only callers of ports. Adapters never call each
 All mutations flow through one small, pure shape — **decide then apply** — so that capabilities can veto commands and new behaviour is additive.
 
 ```rust
-// Pure. No I/O. Lives in tda-core / tda-app.
-fn decide(state: &TaskState, cmd: Command) -> Result<Vec<Event>, Denied>;
-fn apply(state: TaskState, event: Event) -> TaskState;
+// Capability-keyed. Async over the ComponentStore port (a tda-core trait — no
+// runtime/adapter in core). Lives in tda-core; orchestrated by tda-app.
+async fn decide<St: ComponentStore>(store: &St, id: &Id, cmd: &Command, ctx: &DecideCtx)
+    -> Result<Vec<Event>, Denied>;
+async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event);
 ```
 
-- **`decide`** runs the command through an ordered list of **guards**. A guard is a pure `(&state, &cmd) -> Option<Denied>`. Guards come from:
+- **`decide`** runs the command through an ordered list of **guards**. A guard reads the capabilities it needs via `store.get::<C>(id)` and returns `Option<Denied>`. Guards come from:
   - **capabilities** — `Status` guards legal transitions; `Assignment` guards `Claim` (absent/empty ⇒ open; present ⇒ assignee-only);
   - **systems** — cross-cutting rules, e.g. the `blocks` system can deny `SetStatus(wip)` while a blocker isn't `done` (a derived `blocked` check).
   - First denial wins (or collect all — see [§13](#13-open-questions)). If none deny, `decide` returns the resulting `Event`s.
-- **`apply`** folds events into new state. Adapters then persist via the ports.
+- **`apply`** writes each event back as components via `store.set`/`store.remove` (a collection that becomes empty is removed — presence-as-capability, [§7](#7-data-model-turso-adapter)). The event seam is kept (a future audit/undo log can subscribe), it just isn't folded into an aggregate.
 
 **Right-sized on purpose** (your "fast + simple to extend" constraint). This is the *decider pattern*, **not** full CQRS/event-sourcing:
 - one Turso store, queried directly — **no** separate read/write models or projections;
 - events are the internal result of a command, applied straight to state — **no** required event log (add one later for undo/audit without rearchitecting);
 - a plain function call — **no** message bus or async command queue.
 
-Cost of the whole mechanism: one `Command` enum, one `Event` enum, two pure functions, and a `Vec` of guards. Extension = add a capability's guard + its `apply` arm; nothing else changes.
+Cost of the whole mechanism: one `Command` enum, one `Event` enum, two async functions, and an ordered list of guards. Extension = add the capability's `Component` type (the generic store needs no change) + its `Command`/`Event` variant + a guard + an `apply` arm; nothing else changes.
 
 ---
 

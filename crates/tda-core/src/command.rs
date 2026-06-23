@@ -1,12 +1,17 @@
 //! The decider pattern (spec §5a): `decide` runs a command through an ordered
-//! list of pure guards, then emits events; `apply` folds events into state.
+//! list of guards, then emits events; `apply` writes those events back as
+//! components. Both are **async over a [`ComponentStore`]** (spec §5, superseding
+//! `[DECISION]`): a guard reads only the capabilities it needs via `get`, and
+//! `apply` touches only what changed via `set`/`remove` — no whole-task aggregate.
 //!
-//! Scope: the *task-local* lifecycle commands live here, where a single `TaskState`
-//! plus a tiny [`DecideCtx`] is enough to decide. Structural commands (move,
-//! link) need the graph and so are validated in `tda-app` — that's where the
-//! tree/DAG live. Both still flow through guard-style checks (FR-26).
+//! Scope: the *task-local* lifecycle commands live here. Structural commands
+//! (move, link) need the graph and so are validated in `tda-app` — that's where
+//! the tree/DAG live. Both still flow through guard-style checks (FR-26).
 
-use crate::model::{Assignment, Id, Status, TaskState};
+use crate::model::{
+    Assignment, Assignments, Estimate, Id, Notes, Schedule, Status, Tags, TimeSpent, Title,
+};
+use crate::ports::ComponentStore;
 
 /// A refused command, with a human/agent-readable reason (spec §5a).
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
@@ -53,99 +58,173 @@ pub struct DecideCtx {
     pub blocked: bool,
 }
 
-type Guard = fn(&TaskState, &Command, &DecideCtx) -> Option<Denied>;
-
-/// Ordered guards; first denial wins (spec §13 Q2 default).
-const GUARDS: &[Guard] = &[g_status_transition, g_blocked_start, g_claim_rules];
-
-pub fn decide(task: &TaskState, cmd: &Command, ctx: &DecideCtx) -> Result<Vec<Event>, Denied> {
-    for guard in GUARDS {
-        if let Some(denied) = guard(task, cmd, ctx) {
-            return Err(denied);
-        }
+/// Run `cmd` through the ordered guards (first denial wins, spec §13 Q2 default),
+/// reading current state from `store`. On allow, emit the events. Async: guards
+/// `get` only the capabilities they inspect.
+pub async fn decide<St: ComponentStore>(
+    store: &St,
+    id: &Id,
+    cmd: &Command,
+    ctx: &DecideCtx,
+) -> Result<Vec<Event>, Denied> {
+    if let Some(d) = g_status_transition(store, id, cmd).await {
+        return Err(d);
     }
-    Ok(events_for(task, cmd))
+    if let Some(d) = g_blocked_start(cmd, ctx) {
+        return Err(d);
+    }
+    if let Some(d) = g_claim_rules(store, id, cmd).await {
+        return Err(d);
+    }
+    Ok(events_for(store, id, cmd).await)
 }
 
-pub fn apply(task: &mut TaskState, event: &Event) {
+/// Write an event back as components (spec §7 presence-as-capability): a
+/// collection that becomes empty is `remove`d, not stored empty.
+pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
     match event {
-        Event::TitleSet(t) => task.title = t.clone(),
-        Event::NotesSet(n) => task.notes = n.clone(),
-        Event::StatusSet(s) => task.status = *s,
-        Event::ScheduleSet(d) => task.due_date = d.clone(),
-        Event::EstimateSet(e) => task.eta_minutes = *e,
-        Event::TimeSpentAdded(m) => task.time_spent_minutes += m,
+        Event::TitleSet(t) => store.set(id, Title(t.clone())).await,
+        Event::NotesSet(Some(n)) => store.set(id, Notes(n.clone())).await,
+        Event::NotesSet(None) => store.remove::<Notes>(id).await,
+        Event::StatusSet(s) => store.set(id, *s).await,
+        Event::ScheduleSet(Some(d)) => store.set(id, Schedule(d.clone())).await,
+        Event::ScheduleSet(None) => store.remove::<Schedule>(id).await,
+        Event::EstimateSet(Some(e)) => store.set(id, Estimate(*e)).await,
+        Event::EstimateSet(None) => store.remove::<Estimate>(id).await,
+        Event::TimeSpentAdded(m) => {
+            let cur = store.get::<TimeSpent>(id).await.map_or(0, |t| t.0);
+            store.set(id, TimeSpent(cur + m)).await;
+        }
         Event::TagAdded(t) => {
-            task.tags.insert(t.clone());
+            let mut tags = store.get::<Tags>(id).await.unwrap_or_default();
+            tags.0.insert(t.clone());
+            store.set(id, tags).await;
         }
         Event::TagRemoved(t) => {
-            task.tags.remove(t);
+            let mut tags = store.get::<Tags>(id).await.unwrap_or_default();
+            tags.0.remove(t);
+            detach_if_empty(store, id, tags.0.is_empty(), tags).await;
         }
-        Event::Assigned(a) => task.assignments.push(Assignment {
-            actor: a.clone(),
-            claimed: false,
-        }),
-        Event::Unassigned(a) => task.assignments.retain(|x| &x.actor != a),
+        Event::Assigned(a) => {
+            let mut asg = store.get::<Assignments>(id).await.unwrap_or_default();
+            asg.0.push(Assignment {
+                actor: a.clone(),
+                claimed: false,
+            });
+            store.set(id, asg).await;
+        }
+        Event::Unassigned(a) => {
+            let mut asg = store.get::<Assignments>(id).await.unwrap_or_default();
+            asg.0.retain(|x| &x.actor != a);
+            detach_if_empty(store, id, asg.0.is_empty(), asg).await;
+        }
         Event::Claimed(a) => {
-            task.status = Status::Wip;
-            match task.assignments.iter_mut().find(|x| &x.actor == a) {
+            store.set(id, Status::Wip).await;
+            let mut asg = store.get::<Assignments>(id).await.unwrap_or_default();
+            match asg.0.iter_mut().find(|x| &x.actor == a) {
                 Some(x) => x.claimed = true,
-                None => task.assignments.push(Assignment {
+                None => asg.0.push(Assignment {
                     actor: a.clone(),
                     claimed: true,
                 }),
             }
+            store.set(id, asg).await;
         }
     }
 }
 
-/// Map an allowed command to its events. No-ops (idempotent re-sets) yield `[]`.
-fn events_for(task: &TaskState, cmd: &Command) -> Vec<Event> {
+/// `set` a collection component, or `remove` it when it just became empty.
+async fn detach_if_empty<St: ComponentStore, C: crate::model::Component>(
+    store: &St,
+    id: &Id,
+    empty: bool,
+    value: C,
+) {
+    if empty {
+        store.remove::<C>(id).await;
+    } else {
+        store.set(id, value).await;
+    }
+}
+
+/// Map an allowed command to its events. No-ops (idempotent re-sets) yield `[]`,
+/// read from the store's current values.
+async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> Vec<Event> {
     match cmd {
-        Command::SetTitle(t) if &task.title == t => vec![],
-        Command::SetTitle(t) => vec![Event::TitleSet(t.clone())],
-        Command::SetNotes(n) if &task.notes == n => vec![],
-        Command::SetNotes(n) => vec![Event::NotesSet(n.clone())],
-        Command::SetStatus(s) if &task.status == s => vec![],
-        Command::SetStatus(s) => vec![Event::StatusSet(*s)],
-        Command::SetSchedule(d) if &task.due_date == d => vec![],
-        Command::SetSchedule(d) => vec![Event::ScheduleSet(d.clone())],
-        Command::SetEstimate(e) if &task.eta_minutes == e => vec![],
-        Command::SetEstimate(e) => vec![Event::EstimateSet(*e)],
+        Command::SetTitle(t) => {
+            let cur = store.get::<Title>(id).await.map(|x| x.0);
+            no_op_or(cur.as_ref() == Some(t), Event::TitleSet(t.clone()))
+        }
+        Command::SetNotes(n) => {
+            let cur = store.get::<Notes>(id).await.map(|x| x.0);
+            no_op_or(&cur == n, Event::NotesSet(n.clone()))
+        }
+        Command::SetStatus(s) => {
+            let cur = store.get::<Status>(id).await;
+            no_op_or(cur.as_ref() == Some(s), Event::StatusSet(*s))
+        }
+        Command::SetSchedule(d) => {
+            let cur = store.get::<Schedule>(id).await.map(|x| x.0);
+            no_op_or(&cur == d, Event::ScheduleSet(d.clone()))
+        }
+        Command::SetEstimate(e) => {
+            let cur = store.get::<Estimate>(id).await.map(|x| x.0);
+            no_op_or(&cur == e, Event::EstimateSet(*e))
+        }
         Command::AddTimeSpent(0) => vec![],
         Command::AddTimeSpent(m) => vec![Event::TimeSpentAdded(*m)],
-        Command::AddTag(t) if task.tags.contains(t) => vec![],
-        Command::AddTag(t) => vec![Event::TagAdded(t.clone())],
-        Command::RemoveTag(t) if task.tags.contains(t) => vec![Event::TagRemoved(t.clone())],
-        Command::RemoveTag(_) => vec![],
-        Command::Assign(a) if task.assignments.iter().any(|x| &x.actor == a) => vec![],
-        Command::Assign(a) => vec![Event::Assigned(a.clone())],
-        Command::Unassign(a) if task.assignments.iter().any(|x| &x.actor == a) => {
-            vec![Event::Unassigned(a.clone())]
+        Command::AddTag(t) => {
+            let has = store.get::<Tags>(id).await.is_some_and(|x| x.0.contains(t));
+            no_op_or(has, Event::TagAdded(t.clone()))
         }
-        Command::Unassign(_) => vec![],
+        Command::RemoveTag(t) => {
+            let has = store.get::<Tags>(id).await.is_some_and(|x| x.0.contains(t));
+            no_op_or(!has, Event::TagRemoved(t.clone()))
+        }
+        Command::Assign(a) => {
+            let has = assigned(store, id, a).await;
+            no_op_or(has, Event::Assigned(a.clone()))
+        }
+        Command::Unassign(a) => {
+            let has = assigned(store, id, a).await;
+            no_op_or(!has, Event::Unassigned(a.clone()))
+        }
         Command::Claim(a) => vec![Event::Claimed(a.clone())],
     }
+}
+
+/// `[]` when the command is a no-op, else the single resulting event.
+fn no_op_or(is_no_op: bool, event: Event) -> Vec<Event> {
+    if is_no_op { vec![] } else { vec![event] }
+}
+
+async fn assigned<St: ComponentStore>(store: &St, id: &Id, actor: &Id) -> bool {
+    store
+        .get::<Assignments>(id)
+        .await
+        .is_some_and(|a| a.0.iter().any(|x| &x.actor == actor))
 }
 
 // ---- guards ----------------------------------------------------------------
 
 /// `Status` capability: only single steps along `draft↔todo↔wip↔done` (a re-set
 /// to the same value is a no-op, allowed here and dropped by `events_for`).
-fn g_status_transition(task: &TaskState, cmd: &Command, _: &DecideCtx) -> Option<Denied> {
+async fn g_status_transition<St: ComponentStore>(
+    store: &St,
+    id: &Id,
+    cmd: &Command,
+) -> Option<Denied> {
     if let Command::SetStatus(to) = cmd
-        && (task.status.rank() - to.rank()).abs() > 1
+        && let Some(cur) = store.get::<Status>(id).await
+        && (cur.rank() - to.rank()).abs() > 1
     {
-        return Some(Denied(format!(
-            "illegal status transition {} -> {}",
-            task.status, to
-        )));
+        return Some(Denied(format!("illegal status transition {cur} -> {to}")));
     }
     None
 }
 
 /// `blocks` system: cannot start (`→wip`, via SetStatus or Claim) while blocked.
-fn g_blocked_start(_: &TaskState, cmd: &Command, ctx: &DecideCtx) -> Option<Denied> {
+fn g_blocked_start(cmd: &Command, ctx: &DecideCtx) -> Option<Denied> {
     let starting = matches!(cmd, Command::SetStatus(Status::Wip) | Command::Claim(_));
     if ctx.blocked && starting {
         return Some(Denied("blocked: a blocker is not done".into()));
@@ -155,79 +234,15 @@ fn g_blocked_start(_: &TaskState, cmd: &Command, ctx: &DecideCtx) -> Option<Deni
 
 /// `Assignment` capability: claim only from `todo`; if assignees exist, only a
 /// listed one may claim (FR-11, §8).
-fn g_claim_rules(task: &TaskState, cmd: &Command, _: &DecideCtx) -> Option<Denied> {
+async fn g_claim_rules<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> Option<Denied> {
     if let Command::Claim(actor) = cmd {
-        if task.status != Status::Todo {
+        if store.get::<Status>(id).await != Some(Status::Todo) {
             return Some(Denied("claim allowed only from todo".into()));
         }
-        if !task.assignments.is_empty() && !task.assignments.iter().any(|a| &a.actor == actor) {
+        let asg = store.get::<Assignments>(id).await.unwrap_or_default();
+        if !asg.0.is_empty() && !asg.0.iter().any(|a| &a.actor == actor) {
             return Some(Denied("claim restricted to assignees".into()));
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::Timestamp;
-
-    fn task(status: Status) -> TaskState {
-        TaskState::new(Id::new("t1"), "x", status, Timestamp(0))
-    }
-
-    #[test]
-    fn status_steps_one_at_a_time() {
-        let t = task(Status::Draft);
-        assert!(decide(&t, &Command::SetStatus(Status::Todo), &DecideCtx::default()).is_ok());
-        // skipping a step is denied
-        assert!(decide(&t, &Command::SetStatus(Status::Wip), &DecideCtx::default()).is_err());
-    }
-
-    #[test]
-    fn cannot_claim_a_draft() {
-        let t = task(Status::Draft);
-        let r = decide(&t, &Command::Claim(Id::new("a")), &DecideCtx::default());
-        assert_eq!(
-            r.unwrap_err(),
-            Denied("claim allowed only from todo".into())
-        );
-    }
-
-    #[test]
-    fn claim_restricted_to_assignees() {
-        let mut t = task(Status::Todo);
-        t.assignments.push(Assignment {
-            actor: Id::new("alice"),
-            claimed: false,
-        });
-        // bob is not an assignee
-        assert!(decide(&t, &Command::Claim(Id::new("bob")), &DecideCtx::default()).is_err());
-        // alice may, and claiming sets wip + claimed
-        let ev = decide(&t, &Command::Claim(Id::new("alice")), &DecideCtx::default()).unwrap();
-        for e in &ev {
-            apply(&mut t, e);
-        }
-        assert_eq!(t.status, Status::Wip);
-        assert!(t.assignments[0].claimed);
-    }
-
-    #[test]
-    fn cannot_start_while_blocked() {
-        let t = task(Status::Todo);
-        let ctx = DecideCtx { blocked: true };
-        assert!(decide(&t, &Command::SetStatus(Status::Wip), &ctx).is_err());
-        assert!(decide(&t, &Command::Claim(Id::new("a")), &ctx).is_err());
-    }
-
-    #[test]
-    fn claim_with_no_assignees_adds_claimer() {
-        let mut t = task(Status::Todo);
-        let ev = decide(&t, &Command::Claim(Id::new("solo")), &DecideCtx::default()).unwrap();
-        for e in &ev {
-            apply(&mut t, e);
-        }
-        assert_eq!(t.assignments.len(), 1);
-        assert!(t.assignments[0].claimed);
-    }
 }

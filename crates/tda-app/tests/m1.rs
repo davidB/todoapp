@@ -19,9 +19,9 @@ impl Fx {
             ids: SeqIds::default(),
         }
     }
-    fn svc(&self) -> Services<'_> {
+    fn svc(&self) -> Services<'_, MemStore> {
         Services {
-            tasks: &self.store,
+            store: &self.store,
             links: &self.store,
             collections: &self.store,
             clock: &self.clock,

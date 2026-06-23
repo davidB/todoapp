@@ -2,7 +2,7 @@
 //! itself + all descendants. Status → progress %, TimeSpent → sum, Estimate →
 //! sum, Schedule → earliest due (spec §13 Q3 default: progress = done/total).
 
-use tda_core::{Id, Status};
+use tda_core::{ComponentStore, Estimate, Id, Schedule, Status, TaskEntityStore, TimeSpent};
 
 use crate::service::{Error, Services};
 
@@ -16,22 +16,22 @@ pub struct Aggregate {
     pub earliest_due: Option<String>,
 }
 
-impl<'a> Services<'a> {
+impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     pub async fn aggregate(&self, id: &Id) -> Result<Aggregate, Error> {
         let mut agg = Aggregate::default();
         // Roll up over `id` + descendants. Iterative (not recursive `fold`) to
         // avoid boxing an async recursion; the roll-ups are order-independent.
+        // Each capability reads only its own component (spec §3 per-cap roll-up).
         let mut ids = self.descendants(id).await;
         ids.insert(id.clone());
         for tid in ids {
-            let task = self.load(&tid).await?;
             agg.total += 1;
-            if task.status == Status::Done {
+            if self.store.get::<Status>(&tid).await == Some(Status::Done) {
                 agg.done += 1;
             }
-            agg.time_spent_minutes += task.time_spent_minutes;
-            agg.eta_minutes += task.eta_minutes.unwrap_or(0);
-            if let Some(due) = task.due_date {
+            agg.time_spent_minutes += self.store.get::<TimeSpent>(&tid).await.map_or(0, |t| t.0);
+            agg.eta_minutes += self.store.get::<Estimate>(&tid).await.map_or(0, |e| e.0);
+            if let Some(Schedule(due)) = self.store.get::<Schedule>(&tid).await {
                 agg.earliest_due = Some(match agg.earliest_due.take() {
                     Some(cur) if cur <= due => cur,
                     _ => due,

@@ -18,7 +18,7 @@
 
 use async_trait::async_trait;
 
-use crate::model::{Collection, Id, Link, LinkKind, TaskState, Timestamp};
+use crate::model::{Collection, Component, Id, Link, LinkKind, Timestamp};
 
 /// Injected time source — deterministic in tests.
 pub trait Clock {
@@ -32,31 +32,35 @@ pub trait IdGenerator {
     fn next_id(&self) -> Id;
 }
 
-/// Which capability components to assemble when loading a task (spec §5
-/// load-by-projection: a caller names the set it needs, so heavy components
-/// like `Notes` are read only when wanted).
+/// Capability-keyed component access (spec §3/§7), ECS/column-store style: read,
+/// write, or detach **one capability at a time**, keyed by task `Id`. There is no
+/// whole-task load/save — a caller (or a guard) touches only the capabilities it
+/// needs. Generic methods make this *not* object-safe, so callers hold a concrete
+/// store (`Services<St>`), not `&dyn`.
 ///
-/// ponytail: two projections cover M1 (tree rows want title+status; mutations
-/// and query/aggregate want everything). Widen to an explicit capability set
-/// only when a third view needs a different slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Projection {
-    /// Identity + required capabilities (`title`, `status`) only — tree/list rows.
-    Row,
-    /// Identity + every capability — detail panes and any mutation.
-    Full,
+/// ponytail: per-capability reads/writes inside a command mean a command is not
+/// one snapshot-in / one-save-out. Single-user/embedded is fine; wrap a command's
+/// reads+writes in a transaction at M2 (Turso) if concurrency demands it.
+#[async_trait(?Send)]
+pub trait ComponentStore {
+    /// The task's `C` component, or `None` if it doesn't carry that capability.
+    async fn get<C: Component>(&self, id: &Id) -> Option<C>;
+    /// Attach/overwrite the task's `C` component.
+    async fn set<C: Component>(&self, id: &Id, value: C);
+    /// Detach the task's `C` component (absent ⇒ no-op).
+    async fn remove<C: Component>(&self, id: &Id);
 }
 
+/// The minimal `task` entity (spec §7): identity + timestamps only. Everything
+/// else is a [`Component`]. `delete` cascades every component of the id.
 #[async_trait(?Send)]
-pub trait TaskRepository {
-    /// Assemble the task to `projection`, or `None` if it has no identity.
-    async fn load(&self, id: &Id, projection: Projection) -> Option<TaskState>;
-    /// Upsert (create or update): write identity + the capability components
-    /// present in `state`, detaching any that are absent. The minimal entity
-    /// (id + timestamps) and presence-as-capability live here (spec §7).
-    async fn save(&self, state: &TaskState);
+pub trait TaskEntityStore {
+    async fn create(&self, id: &Id, created: Timestamp, updated: Timestamp);
+    /// Bump `updated_at` (after a mutation produced events).
+    async fn touch(&self, id: &Id, updated: Timestamp);
+    /// `(created_at, updated_at)`, or `None` if the id has no entity.
+    async fn meta(&self, id: &Id) -> Option<(Timestamp, Timestamp)>;
     async fn delete(&self, id: &Id);
-    /// Ids of every stored task; callers `load` the projection they need.
     async fn all(&self) -> Vec<Id>;
 }
 

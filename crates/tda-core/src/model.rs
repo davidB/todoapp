@@ -93,52 +93,75 @@ pub struct Assignment {
     pub claimed: bool,
 }
 
-/// A task assembled from its components (spec §5a `TaskState`): identity +
-/// required capabilities (`title`, `status`) + whatever optional capabilities
-/// it carries. An optional field being absent (`None` / empty / `0`) *is* the
-/// "component row not present" of [§7](spec); the store decomposes back to
-/// per-capability maps on `save` and re-assembles on `load`.
+/// A capability component (spec §3): a unit of data keyed by task `Id` in the
+/// store. **Presence of the value *is* the capability** — there is no monolithic
+/// `Task` struct; a task is the set of components attached to its id, fetched and
+/// mutated one capability at a time (`store.get::<Status>(id)` /
+/// `store.set(id, Status::Wip)`). `NAME` keys the per-capability map/table
+/// (spec §7). Adding a capability = a new `Component` type; the generic store
+/// needs no change.
 ///
-/// A `TaskState` loaded with [`crate::Projection::Row`] omits the optional
-/// capabilities — read-only for that path; never `save` a `Row` projection
-/// (it would detach the unloaded components).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TaskState {
-    pub id: Id,
-    pub title: String,
-    pub status: Status,
-    pub notes: Option<String>,
-    /// `Schedule` capability: ISO-8601 date `YYYY-MM-DD`. Lexical order == date
-    /// order, so `due:today`/`overdue` are plain string compares (no date crate).
-    pub due_date: Option<String>,
-    /// `Estimate` capability.
-    pub eta_minutes: Option<u32>,
-    /// `TimeSpent` capability (`0` ⇒ absent).
-    pub time_spent_minutes: u32,
-    pub tags: BTreeSet<String>,
-    pub assignments: Vec<Assignment>,
-    pub created_at: Timestamp,
-    pub updated_at: Timestamp,
+/// Bound is minimal on purpose: `Clone + 'static` is all the in-memory store
+/// (typed `Box<dyn Any>`) needs. The Turso adapter (M2) will add `Serialize`
+/// when it maps a component to a `c_*` row.
+pub trait Component: Clone + 'static {
+    const NAME: &'static str;
 }
 
-impl TaskState {
-    /// Construct a fresh task (the `Create` command is a constructor, not a
-    /// guarded mutation — nothing to deny but an empty title).
-    pub fn new(id: Id, title: impl Into<String>, status: Status, at: Timestamp) -> Self {
-        TaskState {
-            id,
-            title: title.into(),
-            status,
-            notes: None,
-            due_date: None,
-            eta_minutes: None,
-            time_spent_minutes: 0,
-            tags: BTreeSet::new(),
-            assignments: Vec::new(),
-            created_at: at,
-            updated_at: at,
-        }
-    }
+/// Required `Title` capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Title(pub String);
+impl Component for Title {
+    const NAME: &'static str = "title";
+}
+
+/// Required `Status` capability (the enum is the component value itself).
+impl Component for Status {
+    const NAME: &'static str = "status";
+}
+
+/// `Notes` capability: Markdown body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notes(pub String);
+impl Component for Notes {
+    const NAME: &'static str = "notes";
+}
+
+/// `Schedule` capability: ISO-8601 date `YYYY-MM-DD`. Lexical order == date
+/// order, so `due:today`/`overdue` are plain string compares (no date crate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Schedule(pub String);
+impl Component for Schedule {
+    const NAME: &'static str = "schedule";
+}
+
+/// `Estimate` capability (ETA minutes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Estimate(pub u32);
+impl Component for Estimate {
+    const NAME: &'static str = "estimate";
+}
+
+/// `TimeSpent` capability (accumulated minutes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeSpent(pub u32);
+impl Component for TimeSpent {
+    const NAME: &'static str = "timespent";
+}
+
+/// `Tags` capability: the whole set is one component value (empty ⇒ remove it).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tags(pub BTreeSet<String>);
+impl Component for Tags {
+    const NAME: &'static str = "tags";
+}
+
+/// `Assignment` capability: the whole assignee list is one component value
+/// (empty ⇒ remove it). Its presence/contents drive `Claim` (spec §8).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Assignments(pub Vec<Assignment>);
+impl Component for Assignments {
+    const NAME: &'static str = "assignments";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

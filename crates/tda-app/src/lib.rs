@@ -12,5 +12,5 @@ mod tasks;
 pub use aggregate::Aggregate;
 pub use io::Export;
 pub use query::QueryHit;
-pub use service::{Error, Services};
+pub use service::{Error, Services, TaskSnapshot};
 pub use tasks::Anchor;

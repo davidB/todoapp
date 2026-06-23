@@ -28,18 +28,24 @@ grep over `cargo tree`). serde, derive_more, and async-trait are allowed in core
 
 ## Conventions
 
-- **Decider pattern (§5a):** all task-local mutations go through pure
-  `decide(&TaskState, &Command, &DecideCtx) -> Result<Vec<Event>, Denied>` then
-  `apply(&mut TaskState, &Event)`, gated by an ordered list of guards (first
-  denial wins). Graph-aware ops (move/link, cycle checks) live in `tda-app`.
-  Extending = add a guard + an `apply` arm; touch nothing else.
+- **Decider pattern (§5a):** all task-local mutations go through
+  `decide<St: ComponentStore>(&St, &Id, &Command, &DecideCtx) -> Result<Vec<Event>, Denied>`
+  then `apply<St: ComponentStore>(&St, &Id, &Event)` — **capability-keyed and
+  async**: a guard `get`s only the components it inspects, `apply` `set`s only
+  what changed. Gated by an ordered list of guards (first denial wins).
+  Graph-aware ops (move/link, cycle checks) live in `tda-app`. Extending = add a
+  `Component` type + its `Command`/`Event` variant + a guard + an `apply` arm.
 - **Async boundary (§5):** repository ports are `async` traits (`async-trait`,
-  `?Send`), and use cases are `async`. The `decide`/`apply` core and query
-  evaluation stay **pure & sync** — hoist async loads before any sort. Recursive
+  `?Send`), and use cases are `async`. `decide`/`apply` are async **over the
+  `ComponentStore` port** (defined in core, so the dependency rule holds); query
+  evaluation hoists its async component loads before the sync sort. Recursive
   walks are iterative (no boxed async recursion).
-- **Storage (§7):** one component per capability, keyed by task id; *presence is
-  the capability*. `TaskRepository::load(id, Projection)` assembles only what a
-  caller needs (`Row` = title+status, `Full` = all); `save` decomposes back.
+- **Storage (§7):** capability-keyed components, one per capability, keyed by
+  task id; *presence is the capability*. `ComponentStore::{get,set,remove}::<C>`
+  touch one capability at a time (no whole-task aggregate); `TaskEntityStore`
+  holds the minimal id+timestamps entity. `Services::snapshot` assembles a
+  read-only `TaskSnapshot` for query results / export only — never fed back to
+  `decide`/`apply`.
 - Errors: `derive_more` (`Display`/`Error`/`From`) in libs, `anyhow` in bins.
   IDs: ULID (opaque `Id` string; tests use a sequence). Time/ids are injected
   (`Clock`/`IdGenerator`) for deterministic tests.
