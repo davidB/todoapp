@@ -32,21 +32,23 @@ pub enum Error {
 }
 
 impl<'a> Services<'a> {
-    pub fn load(&self, id: &Id) -> Result<Task, Error> {
+    pub async fn load(&self, id: &Id) -> Result<Task, Error> {
         self.tasks
             .get(id)
+            .await
             .ok_or_else(|| Error::NotFound(id.clone()))
     }
 
     /// Child links out of `parent`, ordered by position.
-    pub fn children_of(&self, parent: &Id) -> Vec<tda_core::Link> {
-        self.links.outgoing(parent, LinkKind::Child)
+    pub async fn children_of(&self, parent: &Id) -> Vec<tda_core::Link> {
+        self.links.outgoing(parent, LinkKind::Child).await
     }
 
     /// The structural parent of `child`, if any (single-parent tree).
-    pub fn parent_of(&self, child: &Id) -> Option<Id> {
+    pub async fn parent_of(&self, child: &Id) -> Option<Id> {
         self.links
             .incoming(child, LinkKind::Child)
+            .await
             .into_iter()
             .next()
             .map(|l| l.from)
@@ -54,31 +56,42 @@ impl<'a> Services<'a> {
 
     /// Derived `blocked` (spec §8): some incoming `blocks` edge whose blocker
     /// task is not `done`.
-    pub fn is_blocked(&self, id: &Id) -> bool {
-        self.links.incoming(id, LinkKind::Blocks).iter().any(|l| {
-            self.tasks
+    pub async fn is_blocked(&self, id: &Id) -> bool {
+        for l in self.links.incoming(id, LinkKind::Blocks).await {
+            if self
+                .tasks
                 .get(&l.from)
+                .await
                 .is_some_and(|b| b.status != Status::Done)
-        })
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// All descendants of `id` via `child` links (excludes `id`).
-    pub fn descendants(&self, id: &Id) -> HashSet<Id> {
+    pub async fn descendants(&self, id: &Id) -> HashSet<Id> {
         let mut seen = HashSet::new();
-        let mut stack: Vec<Id> = self.children_of(id).into_iter().map(|l| l.to).collect();
+        let mut stack: Vec<Id> = self
+            .children_of(id)
+            .await
+            .into_iter()
+            .map(|l| l.to)
+            .collect();
         while let Some(cur) = stack.pop() {
             if seen.insert(cur.clone()) {
-                stack.extend(self.children_of(&cur).into_iter().map(|l| l.to));
+                stack.extend(self.children_of(&cur).await.into_iter().map(|l| l.to));
             }
         }
         seen
     }
 
     /// Run a task-local command through `decide → apply → persist` (spec §5a).
-    pub fn run(&self, id: &Id, cmd: Command) -> Result<Task, Error> {
-        let mut task = self.load(id)?;
+    pub async fn run(&self, id: &Id, cmd: Command) -> Result<Task, Error> {
+        let mut task = self.load(id).await?;
         let ctx = DecideCtx {
-            blocked: self.is_blocked(id),
+            blocked: self.is_blocked(id).await,
         };
         let events = decide(&task, &cmd, &ctx)?;
         for e in &events {
@@ -87,7 +100,7 @@ impl<'a> Services<'a> {
         if !events.is_empty() {
             task.updated_at = self.clock.now();
         }
-        self.tasks.put(task.clone());
+        self.tasks.put(task.clone()).await;
         Ok(task)
     }
 }

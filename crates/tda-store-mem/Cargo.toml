@@ -9,3 +9,4 @@ authors.workspace = true
 
 [dependencies]
 tda-core.workspace = true
+async-trait.workspace = true

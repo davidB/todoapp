@@ -17,34 +17,32 @@ pub struct Aggregate {
 }
 
 impl<'a> Services<'a> {
-    pub fn aggregate(&self, id: &Id) -> Result<Aggregate, Error> {
+    pub async fn aggregate(&self, id: &Id) -> Result<Aggregate, Error> {
         let mut agg = Aggregate::default();
-        self.fold(id, &mut agg)?;
+        // Roll up over `id` + descendants. Iterative (not recursive `fold`) to
+        // avoid boxing an async recursion; the roll-ups are order-independent.
+        let mut ids = self.descendants(id).await;
+        ids.insert(id.clone());
+        for tid in ids {
+            let task = self.load(&tid).await?;
+            agg.total += 1;
+            if task.status == Status::Done {
+                agg.done += 1;
+            }
+            agg.time_spent_minutes += task.time_spent_minutes;
+            agg.eta_minutes += task.eta_minutes.unwrap_or(0);
+            if let Some(due) = task.due_date {
+                agg.earliest_due = Some(match agg.earliest_due.take() {
+                    Some(cur) if cur <= due => cur,
+                    _ => due,
+                });
+            }
+        }
         agg.progress = if agg.total > 0 {
             agg.done as f32 / agg.total as f32
         } else {
             0.0
         };
         Ok(agg)
-    }
-
-    fn fold(&self, id: &Id, agg: &mut Aggregate) -> Result<(), Error> {
-        let task = self.load(id)?;
-        agg.total += 1;
-        if task.status == Status::Done {
-            agg.done += 1;
-        }
-        agg.time_spent_minutes += task.time_spent_minutes;
-        agg.eta_minutes += task.eta_minutes.unwrap_or(0);
-        if let Some(due) = task.due_date {
-            agg.earliest_due = Some(match agg.earliest_due.take() {
-                Some(cur) if cur <= due => cur,
-                _ => due,
-            });
-        }
-        for link in self.children_of(id) {
-            self.fold(&link.to, agg)?;
-        }
-        Ok(())
     }
 }

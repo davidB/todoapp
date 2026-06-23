@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use tda_core::{
     Clock, Collection, CollectionRepository, Id, IdGenerator, Link, LinkKind, LinkRepository, Task,
     TaskRepository, Timestamp,
@@ -27,33 +28,35 @@ impl MemStore {
     }
 }
 
+#[async_trait(?Send)]
 impl TaskRepository for MemStore {
-    fn get(&self, id: &Id) -> Option<Task> {
+    async fn get(&self, id: &Id) -> Option<Task> {
         self.tasks.borrow().get(id).cloned()
     }
-    fn put(&self, task: Task) {
+    async fn put(&self, task: Task) {
         self.tasks.borrow_mut().insert(task.id.clone(), task);
     }
-    fn delete(&self, id: &Id) {
+    async fn delete(&self, id: &Id) {
         self.tasks.borrow_mut().remove(id);
     }
-    fn all(&self) -> Vec<Task> {
+    async fn all(&self) -> Vec<Task> {
         self.tasks.borrow().values().cloned().collect()
     }
 }
 
+#[async_trait(?Send)]
 impl LinkRepository for MemStore {
-    fn put(&self, link: Link) {
+    async fn put(&self, link: Link) {
         let mut links = self.links.borrow_mut();
         links.retain(|l| !(l.from == link.from && l.to == link.to && l.kind == link.kind));
         links.push(link);
     }
-    fn remove(&self, from: &Id, to: &Id, kind: LinkKind) {
+    async fn remove(&self, from: &Id, to: &Id, kind: LinkKind) {
         self.links
             .borrow_mut()
             .retain(|l| !(&l.from == from && &l.to == to && l.kind == kind));
     }
-    fn outgoing(&self, from: &Id, kind: LinkKind) -> Vec<Link> {
+    async fn outgoing(&self, from: &Id, kind: LinkKind) -> Vec<Link> {
         let mut out: Vec<Link> = self
             .links
             .borrow()
@@ -64,7 +67,7 @@ impl LinkRepository for MemStore {
         out.sort_by(|a, b| a.position.0.total_cmp(&b.position.0));
         out
     }
-    fn incoming(&self, to: &Id, kind: LinkKind) -> Vec<Link> {
+    async fn incoming(&self, to: &Id, kind: LinkKind) -> Vec<Link> {
         self.links
             .borrow()
             .iter()
@@ -74,27 +77,28 @@ impl LinkRepository for MemStore {
     }
 }
 
+#[async_trait(?Send)]
 impl CollectionRepository for MemStore {
-    fn save(&self, collection: Collection) {
+    async fn save(&self, collection: Collection) {
         let mut cs = self.collections.borrow_mut();
         cs.retain(|c| c.id != collection.id);
         cs.push(collection);
     }
-    fn get(&self, id: &Id) -> Option<Collection> {
+    async fn get(&self, id: &Id) -> Option<Collection> {
         self.collections
             .borrow()
             .iter()
             .find(|c| &c.id == id)
             .cloned()
     }
-    fn by_name(&self, name: &str) -> Option<Collection> {
+    async fn by_name(&self, name: &str) -> Option<Collection> {
         self.collections
             .borrow()
             .iter()
             .find(|c| c.name == name)
             .cloned()
     }
-    fn all(&self) -> Vec<Collection> {
+    async fn all(&self) -> Vec<Collection> {
         self.collections.borrow().clone()
     }
 }

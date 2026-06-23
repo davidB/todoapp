@@ -17,3 +17,4 @@ derive_more.workspace = true
 tda-store-mem.workspace = true
 insta.workspace = true
 proptest.workspace = true
+tokio.workspace = true

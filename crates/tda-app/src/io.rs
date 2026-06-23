@@ -16,17 +16,22 @@ pub struct Export {
 
 impl<'a> Services<'a> {
     /// Collect `root` + its descendant subtree (tasks and the edges among them).
-    pub fn export(&self, root: &Id) -> Result<Export, Error> {
-        let mut ids = self.descendants(root);
+    pub async fn export(&self, root: &Id) -> Result<Export, Error> {
+        let mut ids = self.descendants(root).await;
         ids.insert(root.clone());
 
-        let mut tasks: Vec<Task> = ids.iter().filter_map(|id| self.tasks.get(id)).collect();
+        let mut tasks: Vec<Task> = Vec::new();
+        for id in &ids {
+            if let Some(t) = self.tasks.get(id).await {
+                tasks.push(t);
+            }
+        }
         tasks.sort_by(|a, b| a.id.cmp(&b.id));
 
         let mut links = Vec::new();
         for id in &ids {
             for kind in [LinkKind::Child, LinkKind::Blocks] {
-                for l in self.links.outgoing(id, kind) {
+                for l in self.links.outgoing(id, kind).await {
                     if ids.contains(&l.to) {
                         links.push(l);
                     }
@@ -43,49 +48,49 @@ impl<'a> Services<'a> {
         Ok(Export { tasks, links })
     }
 
-    pub fn export_json(&self, root: &Id) -> Result<String, Error> {
-        let export = self.export(root)?;
+    pub async fn export_json(&self, root: &Id) -> Result<String, Error> {
+        let export = self.export(root).await?;
         serde_json::to_string_pretty(&export).map_err(|e| Error::Import(e.to_string()))
     }
 
     /// FR-17: ingest an `Export` (round-trips with [`Self::export`]).
-    pub fn import_json(&self, json: &str) -> Result<(), Error> {
+    pub async fn import_json(&self, json: &str) -> Result<(), Error> {
         let export: Export =
             serde_json::from_str(json).map_err(|e| Error::Import(e.to_string()))?;
         for task in export.tasks {
-            self.tasks.put(task);
+            self.tasks.put(task).await;
         }
         for link in export.links {
-            self.links.put(link);
+            self.links.put(link).await;
         }
         Ok(())
     }
 
     /// FR-16: Markdown task list of a branch (DFS over `child`, position order).
-    pub fn export_md(&self, root: &Id) -> Result<String, Error> {
+    /// Iterative DFS (explicit stack) to avoid boxing an async recursion.
+    pub async fn export_md(&self, root: &Id) -> Result<String, Error> {
         let mut out = String::new();
-        self.md_node(root, 0, &mut out)?;
-        Ok(out)
-    }
-
-    fn md_node(&self, id: &Id, depth: usize, out: &mut String) -> Result<(), Error> {
-        let task = self.load(id)?;
-        let mark = if task.status == Status::Done {
-            "x"
-        } else {
-            " "
-        };
-        out.push_str(&"  ".repeat(depth));
-        out.push_str(&format!("- [{mark}] {}\n", task.title));
-        for link in self.children_of(id) {
-            self.md_node(&link.to, depth + 1, out)?;
+        let mut stack = vec![(root.clone(), 0usize)];
+        while let Some((id, depth)) = stack.pop() {
+            let task = self.load(&id).await?;
+            let mark = if task.status == Status::Done {
+                "x"
+            } else {
+                " "
+            };
+            out.push_str(&"  ".repeat(depth));
+            out.push_str(&format!("- [{mark}] {}\n", task.title));
+            // push children in reverse so the first sibling is visited next
+            for link in self.children_of(&id).await.into_iter().rev() {
+                stack.push((link.to, depth + 1));
+            }
         }
-        Ok(())
+        Ok(out)
     }
 
     /// FR-17: parse a Markdown task list into a tree (indent = depth). Status
     /// comes from the checkbox (`[x]` → done, else todo). Returns the roots.
-    pub fn import_md(&self, md: &str) -> Result<Vec<Task>, Error> {
+    pub async fn import_md(&self, md: &str) -> Result<Vec<Task>, Error> {
         let mut roots = Vec::new();
         let mut stack: Vec<Id> = Vec::new();
         for raw in md.lines() {
@@ -99,7 +104,7 @@ impl<'a> Services<'a> {
             } else {
                 Status::Todo
             };
-            let task = self.create(title, parent.as_ref(), status, [])?;
+            let task = self.create(title, parent.as_ref(), status, []).await?;
             if parent.is_none() {
                 roots.push(task.clone());
             }

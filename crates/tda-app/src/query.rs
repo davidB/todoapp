@@ -15,20 +15,25 @@ pub struct QueryHit {
 }
 
 impl<'a> Services<'a> {
-    pub fn evaluate(&self, q: &Query) -> Vec<QueryHit> {
+    pub async fn evaluate(&self, q: &Query) -> Vec<QueryHit> {
         let today = self.clock.today();
-        let within = q.filter.within.as_ref().map(|id| self.descendants(id));
+        let within = match q.filter.within.as_ref() {
+            Some(id) => Some(self.descendants(id).await),
+            None => None,
+        };
 
-        let mut hits: Vec<QueryHit> = self
-            .tasks
-            .all()
-            .into_iter()
-            .filter(|t| self.matches(t, &q.filter, &today, within.as_ref()))
-            .map(|t| {
-                let path = self.breadcrumb(&t.id);
-                QueryHit { task: t, path }
-            })
-            .collect();
+        // All async work (breadcrumb + priority key) happens here, before the
+        // sort: `sort_by` is sync, so each hit carries its precomputed
+        // tree-priority key for the comparator.
+        let mut hits: Vec<(QueryHit, Vec<f64>)> = Vec::new();
+        for t in self.tasks.all().await {
+            if !self.matches(&t, &q.filter, &today, within.as_ref()) {
+                continue;
+            }
+            let path = self.breadcrumb(&t.id).await;
+            let key = self.priority_key(&t.id).await;
+            hits.push((QueryHit { task: t, path }, key));
+        }
 
         let keys = if q.sort.is_empty() {
             vec![SortKey {
@@ -38,19 +43,19 @@ impl<'a> Services<'a> {
         } else {
             q.sort.clone()
         };
-        hits.sort_by(|a, b| self.cmp_hits(a, b, &keys));
-        hits
+        hits.sort_by(|a, b| cmp_hits(a, b, &keys));
+        hits.into_iter().map(|(h, _)| h).collect()
     }
 
     // ---- built-in parameterized queries (FR-25) ---------------------------
 
     /// `what-next`: `status:todo` by priority.
-    pub fn what_next(&self) -> Vec<QueryHit> {
-        self.what_next_for(None, None, None)
+    pub async fn what_next(&self) -> Vec<QueryHit> {
+        self.what_next_for(None, None, None).await
     }
 
     /// `what-next-for`: `status:todo` optionally scoped by assignee/subtree/tag.
-    pub fn what_next_for(
+    pub async fn what_next_for(
         &self,
         assignee: Option<Id>,
         within: Option<Id>,
@@ -69,10 +74,11 @@ impl<'a> Services<'a> {
                 dir: Dir::Asc,
             }],
         })
+        .await
     }
 
     /// `due-today`: `due:today`, sorted by due then priority.
-    pub fn due_today(&self) -> Vec<QueryHit> {
+    pub async fn due_today(&self) -> Vec<QueryHit> {
         self.evaluate(&Query {
             filter: Filter {
                 due: Some(DueFilter::Today),
@@ -89,6 +95,7 @@ impl<'a> Services<'a> {
                 },
             ],
         })
+        .await
     }
 
     // ---- internals --------------------------------------------------------
@@ -138,13 +145,13 @@ impl<'a> Services<'a> {
     }
 
     /// Ancestor titles from root down to the immediate parent.
-    fn breadcrumb(&self, id: &Id) -> Vec<String> {
+    async fn breadcrumb(&self, id: &Id) -> Vec<String> {
         let mut chain = Vec::new();
-        let mut cur = self.parent_of(id);
+        let mut cur = self.parent_of(id).await;
         while let Some(pid) = cur {
-            if let Some(t) = self.tasks.get(&pid) {
+            if let Some(t) = self.tasks.get(&pid).await {
                 chain.push(t.title.clone());
-                cur = self.parent_of(&pid);
+                cur = self.parent_of(&pid).await;
             } else {
                 break;
             }
@@ -155,12 +162,13 @@ impl<'a> Services<'a> {
 
     /// Tree-priority key: the path of `position`s root → task. Sorts a flat
     /// result back into tree order.
-    fn priority_key(&self, id: &Id) -> Vec<f64> {
+    async fn priority_key(&self, id: &Id) -> Vec<f64> {
         let mut key = Vec::new();
         let mut cur = id.clone();
-        while let Some(parent) = self.parent_of(&cur) {
+        while let Some(parent) = self.parent_of(&cur).await {
             let pos = self
                 .children_of(&parent)
+                .await
                 .into_iter()
                 .find(|l| l.to == cur)
                 .map(|l| l.position.0)
@@ -171,29 +179,27 @@ impl<'a> Services<'a> {
         key.reverse();
         key
     }
+}
 
-    fn cmp_hits(&self, a: &QueryHit, b: &QueryHit, keys: &[SortKey]) -> Ordering {
-        for k in keys {
-            let ord = match k.key {
-                SortField::Priority => cmp_f64_seq(
-                    &self.priority_key(&a.task.id),
-                    &self.priority_key(&b.task.id),
-                ),
-                SortField::Due => a.task.due_date.cmp(&b.task.due_date),
-                SortField::Created => a.task.created_at.cmp(&b.task.created_at),
-                SortField::Updated => a.task.updated_at.cmp(&b.task.updated_at),
-            };
-            let ord = match k.dir {
-                Dir::Asc => ord,
-                Dir::Desc => ord.reverse(),
-            };
-            if ord != Ordering::Equal {
-                return ord;
-            }
+/// Compare two decorated hits `(hit, precomputed tree-priority key)`.
+fn cmp_hits(a: &(QueryHit, Vec<f64>), b: &(QueryHit, Vec<f64>), keys: &[SortKey]) -> Ordering {
+    for k in keys {
+        let ord = match k.key {
+            SortField::Priority => cmp_f64_seq(&a.1, &b.1),
+            SortField::Due => a.0.task.due_date.cmp(&b.0.task.due_date),
+            SortField::Created => a.0.task.created_at.cmp(&b.0.task.created_at),
+            SortField::Updated => a.0.task.updated_at.cmp(&b.0.task.updated_at),
+        };
+        let ord = match k.dir {
+            Dir::Asc => ord,
+            Dir::Desc => ord.reverse(),
+        };
+        if ord != Ordering::Equal {
+            return ord;
         }
-        // stable, deterministic tie-break
-        a.task.id.cmp(&b.task.id)
     }
+    // stable, deterministic tie-break
+    a.0.task.id.cmp(&b.0.task.id)
 }
 
 fn due_matches(due: Option<&str>, filter: &DueFilter, today: &str) -> bool {

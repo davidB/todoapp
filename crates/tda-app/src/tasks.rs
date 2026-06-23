@@ -12,7 +12,7 @@ pub enum Anchor {
 
 impl<'a> Services<'a> {
     /// FR-1/FR-2: create one task, optionally under `parent` (appended last).
-    pub fn create(
+    pub async fn create(
         &self,
         title: impl Into<String>,
         parent: Option<&Id>,
@@ -22,16 +22,16 @@ impl<'a> Services<'a> {
         let mut task = Task::new(self.ids.next_id(), title, status, self.clock.now());
         task.tags = tags.into_iter().collect();
         let id = task.id.clone();
-        self.tasks.put(task.clone());
+        self.tasks.put(task.clone()).await;
         if let Some(p) = parent {
-            self.attach(&id, p, None)?;
+            self.attach(&id, p, None).await?;
         }
         Ok(task)
     }
 
     /// FR-1: batch-create from text, indentation (2 spaces or a tab) = depth
     /// (spec §13 Q7 default). Returns tasks in document order.
-    pub fn batch_create(&self, text: &str) -> Result<Vec<Task>, Error> {
+    pub async fn batch_create(&self, text: &str) -> Result<Vec<Task>, Error> {
         let mut created = Vec::new();
         // stack[d] = id of the most recent task at depth d (its children sit at d+1).
         let mut stack: Vec<Id> = Vec::new();
@@ -43,7 +43,9 @@ impl<'a> Services<'a> {
             let depth = indent_depth(raw);
             stack.truncate(depth);
             let parent = stack.last().cloned();
-            let task = self.create(title, parent.as_ref(), Status::Draft, [])?;
+            let task = self
+                .create(title, parent.as_ref(), Status::Draft, [])
+                .await?;
             stack.push(task.id.clone());
             created.push(task);
         }
@@ -52,87 +54,102 @@ impl<'a> Services<'a> {
 
     // ---- task-local edits (thin wrappers over the decider) ----------------
 
-    pub fn set_title(&self, id: &Id, title: impl Into<String>) -> Result<Task, Error> {
-        self.run(id, Command::SetTitle(title.into()))
+    pub async fn set_title(&self, id: &Id, title: impl Into<String>) -> Result<Task, Error> {
+        self.run(id, Command::SetTitle(title.into())).await
     }
-    pub fn set_notes(&self, id: &Id, notes: Option<String>) -> Result<Task, Error> {
-        self.run(id, Command::SetNotes(notes))
+    pub async fn set_notes(&self, id: &Id, notes: Option<String>) -> Result<Task, Error> {
+        self.run(id, Command::SetNotes(notes)).await
     }
-    pub fn set_status(&self, id: &Id, status: Status) -> Result<Task, Error> {
-        self.run(id, Command::SetStatus(status))
+    pub async fn set_status(&self, id: &Id, status: Status) -> Result<Task, Error> {
+        self.run(id, Command::SetStatus(status)).await
     }
-    pub fn set_due(&self, id: &Id, due: Option<String>) -> Result<Task, Error> {
-        self.run(id, Command::SetSchedule(due))
+    pub async fn set_due(&self, id: &Id, due: Option<String>) -> Result<Task, Error> {
+        self.run(id, Command::SetSchedule(due)).await
     }
-    pub fn set_estimate(&self, id: &Id, minutes: Option<u32>) -> Result<Task, Error> {
-        self.run(id, Command::SetEstimate(minutes))
+    pub async fn set_estimate(&self, id: &Id, minutes: Option<u32>) -> Result<Task, Error> {
+        self.run(id, Command::SetEstimate(minutes)).await
     }
-    pub fn add_time_spent(&self, id: &Id, minutes: u32) -> Result<Task, Error> {
-        self.run(id, Command::AddTimeSpent(minutes))
+    pub async fn add_time_spent(&self, id: &Id, minutes: u32) -> Result<Task, Error> {
+        self.run(id, Command::AddTimeSpent(minutes)).await
     }
-    pub fn add_tag(&self, id: &Id, tag: impl Into<String>) -> Result<Task, Error> {
-        self.run(id, Command::AddTag(tag.into()))
+    pub async fn add_tag(&self, id: &Id, tag: impl Into<String>) -> Result<Task, Error> {
+        self.run(id, Command::AddTag(tag.into())).await
     }
-    pub fn remove_tag(&self, id: &Id, tag: impl Into<String>) -> Result<Task, Error> {
-        self.run(id, Command::RemoveTag(tag.into()))
+    pub async fn remove_tag(&self, id: &Id, tag: impl Into<String>) -> Result<Task, Error> {
+        self.run(id, Command::RemoveTag(tag.into())).await
     }
-    pub fn assign(&self, id: &Id, actor: Id) -> Result<Task, Error> {
-        self.run(id, Command::Assign(actor))
+    pub async fn assign(&self, id: &Id, actor: Id) -> Result<Task, Error> {
+        self.run(id, Command::Assign(actor)).await
     }
-    pub fn unassign(&self, id: &Id, actor: Id) -> Result<Task, Error> {
-        self.run(id, Command::Unassign(actor))
+    pub async fn unassign(&self, id: &Id, actor: Id) -> Result<Task, Error> {
+        self.run(id, Command::Unassign(actor)).await
     }
     /// FR-11: claim a `todo` task (open if unassigned, else assignee-only).
-    pub fn claim(&self, id: &Id, actor: Id) -> Result<Task, Error> {
-        self.run(id, Command::Claim(actor))
+    pub async fn claim(&self, id: &Id, actor: Id) -> Result<Task, Error> {
+        self.run(id, Command::Claim(actor)).await
     }
 
     // ---- structure (FR-4..FR-8): graph-aware, validated here, not in decide -
 
     /// Re-point `id`'s single `child` parent to `parent` at `anchor` (FR-8).
     /// Rejects a move under the task's own subtree (cycle).
-    pub fn move_task(&self, id: &Id, parent: &Id, anchor: Option<Anchor>) -> Result<(), Error> {
-        if parent == id || self.descendants(id).contains(parent) {
+    pub async fn move_task(
+        &self,
+        id: &Id,
+        parent: &Id,
+        anchor: Option<Anchor>,
+    ) -> Result<(), Error> {
+        if parent == id || self.descendants(id).await.contains(parent) {
             return Err(Error::Cycle(format!("{id} cannot be moved under {parent}")));
         }
-        if let Some(old) = self.parent_of(id) {
-            self.links.remove(&old, id, LinkKind::Child);
+        if let Some(old) = self.parent_of(id).await {
+            self.links.remove(&old, id, LinkKind::Child).await;
         }
-        self.attach(id, parent, anchor)
+        self.attach(id, parent, anchor).await
     }
 
     /// Reorder `id` among its existing siblings (FR-7).
-    pub fn reorder(&self, id: &Id, anchor: Anchor) -> Result<(), Error> {
+    pub async fn reorder(&self, id: &Id, anchor: Anchor) -> Result<(), Error> {
         let parent = self
             .parent_of(id)
+            .await
             .ok_or_else(|| Error::Cycle(format!("{id} has no parent to reorder within")))?;
-        self.attach(id, &parent, Some(anchor))
+        self.attach(id, &parent, Some(anchor)).await
     }
 
     /// FR-6: add a `blocks` edge `blocker → blocked`; rejects a new cycle.
-    pub fn block(&self, blocker: &Id, blocked: &Id) -> Result<(), Error> {
-        if blocker == blocked || self.blocks_reaches(blocked, blocker) {
+    pub async fn block(&self, blocker: &Id, blocked: &Id) -> Result<(), Error> {
+        if blocker == blocked || self.blocks_reaches(blocked, blocker).await {
             return Err(Error::Cycle(format!("{blocker} blocks {blocked}")));
         }
         let last = self
             .links
             .outgoing(blocker, LinkKind::Blocks)
+            .await
             .last()
             .map(|l| l.position.0);
-        self.links.put(Link {
-            from: blocker.clone(),
-            to: blocked.clone(),
-            kind: LinkKind::Blocks,
-            position: Position(Position::between(last, None)),
-        });
+        self.links
+            .put(Link {
+                from: blocker.clone(),
+                to: blocked.clone(),
+                kind: LinkKind::Blocks,
+                position: Position(Position::between(last, None)),
+            })
+            .await;
         Ok(())
     }
 
     /// Add/replace the `child` link `parent → id`, positioned per `anchor`.
-    pub(crate) fn attach(&self, id: &Id, parent: &Id, anchor: Option<Anchor>) -> Result<(), Error> {
+    pub(crate) async fn attach(
+        &self,
+        id: &Id,
+        parent: &Id,
+        anchor: Option<Anchor>,
+    ) -> Result<(), Error> {
         // siblings excluding the one being (re)positioned
         let sibs: Vec<_> = self
             .children_of(parent)
+            .await
             .into_iter()
             .filter(|l| &l.to != id)
             .collect();
@@ -163,17 +180,19 @@ impl<'a> Services<'a> {
                 }
             }
         };
-        self.links.put(Link {
-            from: parent.clone(),
-            to: id.clone(),
-            kind: LinkKind::Child,
-            position: Position(pos),
-        });
+        self.links
+            .put(Link {
+                from: parent.clone(),
+                to: id.clone(),
+                kind: LinkKind::Child,
+                position: Position(pos),
+            })
+            .await;
         Ok(())
     }
 
     /// Can `start` reach `target` following `blocks` edges? (cycle test)
-    fn blocks_reaches(&self, start: &Id, target: &Id) -> bool {
+    async fn blocks_reaches(&self, start: &Id, target: &Id) -> bool {
         let mut stack = vec![start.clone()];
         let mut seen = std::collections::HashSet::new();
         while let Some(cur) = stack.pop() {
@@ -184,6 +203,7 @@ impl<'a> Services<'a> {
                 stack.extend(
                     self.links
                         .outgoing(&cur, LinkKind::Blocks)
+                        .await
                         .into_iter()
                         .map(|l| l.to),
                 );

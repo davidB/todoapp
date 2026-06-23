@@ -14,9 +14,13 @@ tda-core = { path = "crates/tda-core" }
 tda-app = { path = "crates/tda-app" }
 tda-store-mem = { path = "crates/tda-store-mem" }
 
-# Not I/O: serialization + error boilerplate only (see spec §5 dependency rule).
+# Not I/O: serialization, error, and async-glue helpers only (see spec §5).
+# async-trait is a proc-macro (dyn-safe async ports), not a runtime — allowed in core.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 derive_more = { version = "2", features = ["display", "error", "from"] }
+async-trait = "0.1"
 insta = { version = "1", features = ["json"] }
 proptest = "1"
+# tokio is a runtime (I/O): test-only in tda-app; never a tda-core/tda-app normal dep.
+tokio = { version = "1", features = ["rt", "macros"] }
