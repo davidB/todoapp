@@ -32,9 +32,10 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         if !tags.is_empty() {
             self.store.set(&id, Tags(tags)).await;
         }
-        if let Some(p) = parent {
-            self.attach(&id, p, None).await?;
-        }
+        // Top-level tasks attach under the virtual-root sentinel (spec §7), so a
+        // root is just another `child` edge and `roots()` is a plain port query.
+        let root = Id::root();
+        self.attach(&id, parent.unwrap_or(&root), None).await?;
         self.snapshot(&id).await
     }
 
@@ -115,7 +116,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         if parent == id || self.descendants(id).await.contains(parent) {
             return Err(Error::Cycle(format!("{id} cannot be moved under {parent}")));
         }
-        if let Some(old) = self.parent_of(id).await {
+        if let Some(old) = self.raw_parent_of(id).await {
             self.links.remove(&old, id, LinkKind::Child).await;
         }
         self.attach(id, parent, anchor).await
@@ -123,8 +124,9 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
 
     /// Reorder `id` among its existing siblings (FR-7).
     pub async fn reorder(&self, id: &Id, anchor: Anchor) -> Result<(), Error> {
+        // raw parent so a top-level task reorders among the sentinel's children.
         let parent = self
-            .parent_of(id)
+            .raw_parent_of(id)
             .await
             .ok_or_else(|| Error::Cycle(format!("{id} has no parent to reorder within")))?;
         self.attach(id, &parent, Some(anchor)).await

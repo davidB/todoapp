@@ -79,6 +79,33 @@ async fn move_subtree_and_reject_cycle() {
 }
 
 #[tokio::test]
+async fn roots_lists_top_level_tasks() {
+    let fx = Fx::new();
+    let s = fx.svc();
+    let a = s.create("A", None, Status::Todo, []).await.unwrap();
+    let b = s.create("B", None, Status::Todo, []).await.unwrap();
+    let c = s.create("C", Some(&a.id), Status::Todo, []).await.unwrap();
+
+    // roots are the parentless tasks, in position order; the child is excluded.
+    assert_eq!(s.roots().await, vec![a.id.clone(), b.id.clone()]);
+    assert!(!s.roots().await.contains(&c.id));
+    // the sentinel parent is hidden behind the public None contract.
+    assert_eq!(s.parent_of(&a.id).await, None);
+
+    // re-parenting a root drops it from the list.
+    s.move_task(&b.id, &a.id, None).await.unwrap();
+    assert_eq!(s.roots().await, vec![a.id.clone()]);
+
+    // an exported branch re-imports as a top-level root (invariant preserved).
+    let fx2 = Fx::new();
+    let s2 = fx2.svc();
+    s2.import_json(&s.export_json(&a.id).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(s2.roots().await, vec![a.id]);
+}
+
+#[tokio::test]
 async fn reorder_with_anchor() {
     let fx = Fx::new();
     let s = fx.svc();

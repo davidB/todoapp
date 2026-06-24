@@ -129,7 +129,8 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         self.links.outgoing(parent, LinkKind::Child).await
     }
 
-    /// The structural parent of `child`, if any (single-parent tree).
+    /// The structural parent of `child`, if any (single-parent tree). The
+    /// virtual-root sentinel maps to `None` — a root has no *visible* parent.
     pub async fn parent_of(&self, child: &Id) -> Option<Id> {
         self.links
             .incoming(child, LinkKind::Child)
@@ -137,6 +138,30 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
             .into_iter()
             .next()
             .map(|l| l.from)
+            .filter(|p| !p.is_root())
+    }
+
+    /// The raw structural parent, **including** the virtual-root sentinel — for
+    /// move/reorder, which must re-point or order the actual `child` edge a root
+    /// holds to the sentinel (unlike the public, sentinel-hiding `parent_of`).
+    pub(crate) async fn raw_parent_of(&self, child: &Id) -> Option<Id> {
+        self.links
+            .incoming(child, LinkKind::Child)
+            .await
+            .into_iter()
+            .next()
+            .map(|l| l.from)
+    }
+
+    /// Top-level tasks: the invisible root's children, ordered by position
+    /// (spec §7). Port-level via `outgoing(ROOT, Child)` — indexed in Turso,
+    /// no whole-store scan.
+    pub async fn roots(&self) -> Vec<Id> {
+        self.children_of(&Id::root())
+            .await
+            .into_iter()
+            .map(|l| l.to)
+            .collect()
     }
 
     /// Derived `blocked` (spec §8): some incoming `blocks` edge whose blocker

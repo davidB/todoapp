@@ -23,6 +23,15 @@ impl Id {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+    /// The invisible structural root (spec §7 virtual-root sentinel). Never a
+    /// `task` entity — only ever a `child` link `from`. The reserved string
+    /// can't collide with a 26-char base32 ULID.
+    pub fn root() -> Self {
+        Self("__root__".into())
+    }
+    pub fn is_root(&self) -> bool {
+        self.0 == "__root__"
+    }
 }
 
 impl fmt::Display for Id {

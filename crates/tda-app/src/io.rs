@@ -60,8 +60,23 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         for task in &export.tasks {
             self.write_snapshot(task).await;
         }
-        for link in export.links {
-            self.links.put(link).await;
+        // Tasks with a `child` parent inside the payload (computed over the
+        // import, not the whole store).
+        let parented: std::collections::HashSet<&Id> = export
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Child)
+            .map(|l| &l.to)
+            .collect();
+        for link in &export.links {
+            self.links.put(link.clone()).await;
+        }
+        // Branch roots (no parent in the payload) attach under the virtual root,
+        // so the re-imported branch is a top-level task (`roots()` invariant).
+        for task in &export.tasks {
+            if !parented.contains(&task.id) {
+                self.attach(&task.id, &Id::root(), None).await?;
+            }
         }
         Ok(())
     }
