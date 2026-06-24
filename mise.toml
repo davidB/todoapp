@@ -5,6 +5,7 @@ experimental = true
 
 [tools]
 rust = { version = "1.96.0", profile = "minimal", components = "rustfmt,clippy" }
+"github:kucherenko/jscpd" = "latest"
 
 [tasks."build"]
 description = "compile the workspace"
@@ -33,6 +34,15 @@ cargo --locked tree -p tda-core --edges normal --prefix none \
   | rg -iw 'tokio|turso|libsql|axum|clap|ratatui|crossterm|reqwest|hyper|rmcp|bevy_ecs' \
   && { echo 'tda-core must not depend on I/O / framework crates (spec §5)'; exit 1; } || exit 0
 """
+
+[tasks."lint:megalinter"]
+description = "run the MegaLinter (`rust` flavor) locally on code see https://megalinter.io/latest/config-file/ to configure (heavy download and longer to run)"
+# run = "bunx mega-linter-runner --flavor rust" # wrapper for docker command
+run = "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:rw -v $(pwd):/tmp/lint:rw ghcr.io/oxsecurity/megalinter-rust:v9"
+
+[tasks."lint:duplicate"]
+description = "detect code duplication (with jscpd)"
+run = "jscpd crates/ --threshold 5 --reporters console"
 
 [tasks."autofix"]
 description = "auto-fix lints, then format"

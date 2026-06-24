@@ -7,3 +7,5 @@ mise.local.toml
 # editor / agent local files
 .env.local
 .envrc
+
+megalinter-reports

@@ -1,0 +1,6 @@
+# see https://megalinter.io/latest/config-file/
+DISABLE:
+  - MARKDOWN
+  - SPELL
+DISABLE_LINTERS:
+  - RUST_CLIPPY

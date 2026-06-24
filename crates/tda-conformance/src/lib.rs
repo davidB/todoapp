@@ -381,6 +381,52 @@ macro_rules! conformance_suite {
                 let out = s.export_md(&roots[0].id).await.unwrap();
                 assert_eq!(out, md);
             }
+
+            /// User values are opaque data: special characters (notably a SQL
+            /// injection payload) round-trip verbatim, alter no schema, and are
+            /// matched as literals — proving any SQL store binds, never
+            /// concatenates (no-op for the in-memory store, real teeth for Turso).
+            #[tokio::test]
+            async fn special_characters_are_stored_as_data() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let evil = "Robert'); DROP TABLE task;--";
+                let t = s.create(evil, None, Status::Todo, []).await.unwrap();
+                s.add_tag(&t.id, evil).await.unwrap();
+                s.set_notes(&t.id, Some(evil.into())).await.unwrap();
+                // a benign neighbour proves the store is intact after the payload
+                let other = s.create("survivor", None, Status::Todo, []).await.unwrap();
+
+                let snap = s.snapshot(&t.id).await.unwrap();
+                assert_eq!(snap.title, evil);
+                assert_eq!(snap.notes.as_deref(), Some(evil));
+                assert!(snap.tags.contains(evil));
+                assert_eq!(s.roots().await.len(), 2);
+                assert!(s.snapshot(&other.id).await.is_ok());
+
+                let by_text = s
+                    .evaluate(&Query {
+                        filter: Filter {
+                            text: Some(evil.into()),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .await;
+                assert_eq!(by_text.len(), 1);
+                assert_eq!(by_text[0].task.id, t.id);
+
+                let by_tag = s
+                    .evaluate(&Query {
+                        filter: Filter {
+                            tags: vec![evil.into()],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })
+                    .await;
+                assert_eq!(by_tag.len(), 1);
+            }
         }
     };
 }
