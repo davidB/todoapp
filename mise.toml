@@ -42,7 +42,7 @@ run = "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock:rw -v $(pwd)
 
 [tasks."lint:duplicate"]
 description = "detect code duplication (with jscpd)"
-run = "jscpd crates/ --threshold 5 --reporters console"
+run = "cpd crates/ --threshold 5 --reporters console"
 
 [tasks."autofix"]
 description = "auto-fix lints, then format"
