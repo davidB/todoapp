@@ -12,13 +12,15 @@
 //! ponytail: revisit to `Send` (Mutex-backed store) only if a multi-threaded
 //! server (M5/axum) needs it.
 //!
-//! `QueryEngine` from the spec is intentionally *not* a trait here: query
-//! evaluation is pure over a store snapshot and has exactly one implementation
-//! (`tda-app`), so a trait would be a one-impl abstraction (YAGNI).
+//! `QueryEngine` is a port (spec §5): the *filter* runs at the store so a
+//! durable adapter pushes it into SQL (efficient `WHERE`) instead of an O(n)
+//! scan; sort + breadcrumb assembly stays in `tda-app`, shared by every store.
+//! [`crate::select_matching`] is the reference scan adapters reuse when they
+//! have no faster path (the in-memory store does).
 
 use async_trait::async_trait;
 
-use crate::model::{Collection, Component, Id, Link, LinkKind, Timestamp};
+use crate::model::{Collection, Component, Filter, Id, Link, LinkKind, Timestamp};
 
 /// Injected time source — deterministic in tests.
 pub trait Clock {
@@ -81,4 +83,13 @@ pub trait CollectionRepository {
     async fn get(&self, id: &Id) -> Option<Collection>;
     async fn by_name(&self, name: &str) -> Option<Collection>;
     async fn all(&self) -> Vec<Collection>;
+}
+
+/// Evaluate a query's *filter* — the ids of tasks that match (unsorted). `today`
+/// is the reference date for `due:today`/`overdue`. Object-safe (no generic
+/// methods), so it rides in `Services` as `&dyn`. Sorting + breadcrumbs are the
+/// caller's job (`tda-app`), identical across stores.
+#[async_trait(?Send)]
+pub trait QueryEngine {
+    async fn select(&self, filter: &Filter, today: &str) -> Vec<Id>;
 }

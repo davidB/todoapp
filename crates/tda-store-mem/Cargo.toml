@@ -10,3 +10,8 @@ authors.workspace = true
 [dependencies]
 tda-core.workspace = true
 async-trait.workspace = true
+
+[dev-dependencies]
+tda-app.workspace = true
+tda-conformance.workspace = true
+tokio.workspace = true

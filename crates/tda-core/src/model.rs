@@ -110,15 +110,18 @@ pub struct Assignment {
 /// (spec §7). Adding a capability = a new `Component` type; the generic store
 /// needs no change.
 ///
-/// Bound is minimal on purpose: `Clone + 'static` is all the in-memory store
-/// (typed `Box<dyn Any>`) needs. The Turso adapter (M2) will add `Serialize`
-/// when it maps a component to a `c_*` row.
-pub trait Component: Clone + 'static {
+/// The in-memory store only needs `Clone + 'static` (typed `Box<dyn Any>`); the
+/// serde bounds are for durable stores that map a component to its row(s).
+///
+/// The `Serialize`/`DeserializeOwned` bound lets a store map a component
+/// generically to/from its row(s): the Turso adapter (M2) bridges each value
+/// through `serde_json::to_value`/`from_value` to its typed `c_*` column(s).
+pub trait Component: Clone + 'static + Serialize + serde::de::DeserializeOwned {
     const NAME: &'static str;
 }
 
 /// Required `Title` capability.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Title(pub String);
 impl Component for Title {
     const NAME: &'static str = "title";
@@ -130,7 +133,7 @@ impl Component for Status {
 }
 
 /// `Notes` capability: Markdown body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notes(pub String);
 impl Component for Notes {
     const NAME: &'static str = "notes";
@@ -138,28 +141,28 @@ impl Component for Notes {
 
 /// `Schedule` capability: ISO-8601 date `YYYY-MM-DD`. Lexical order == date
 /// order, so `due:today`/`overdue` are plain string compares (no date crate).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Schedule(pub String);
 impl Component for Schedule {
     const NAME: &'static str = "schedule";
 }
 
 /// `Estimate` capability (ETA minutes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Estimate(pub u32);
 impl Component for Estimate {
     const NAME: &'static str = "estimate";
 }
 
 /// `TimeSpent` capability (accumulated minutes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeSpent(pub u32);
 impl Component for TimeSpent {
     const NAME: &'static str = "timespent";
 }
 
 /// `Tags` capability: the whole set is one component value (empty ⇒ remove it).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tags(pub BTreeSet<String>);
 impl Component for Tags {
     const NAME: &'static str = "tags";
@@ -167,7 +170,7 @@ impl Component for Tags {
 
 /// `Assignment` capability: the whole assignee list is one component value
 /// (empty ⇒ remove it). Its presence/contents drive `Claim` (spec §8).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assignments(pub Vec<Assignment>);
 impl Component for Assignments {
     const NAME: &'static str = "assignments";

@@ -1,8 +1,0 @@
----
-source: crates/tda-app/tests/m1.rs
-expression: s.export_md(&root.id).unwrap()
----
-- [ ] Roadmap
-  - [x] M0 skeleton
-    - [x] CI
-  - [ ] M1 core

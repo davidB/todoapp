@@ -1,0 +1,11 @@
+[package]
+name = "tda-conformance"
+description = "Shared port-conformance test suite + deterministic fixtures, run against every store (spec §11)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tda-core.workspace = true

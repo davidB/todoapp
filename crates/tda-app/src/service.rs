@@ -11,14 +11,15 @@ use std::collections::{BTreeSet, HashSet};
 use serde::{Deserialize, Serialize};
 use tda_core::{
     Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, DecideCtx,
-    Denied, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, Schedule, Status, Tags,
-    TaskEntityStore, TimeSpent, Timestamp, Title, apply, decide,
+    Denied, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, QueryEngine, Schedule,
+    Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title, apply, decide,
 };
 
 pub struct Services<'a, St> {
     pub store: &'a St,
     pub links: &'a dyn LinkRepository,
     pub collections: &'a dyn CollectionRepository,
+    pub query: &'a dyn QueryEngine,
     pub clock: &'a dyn Clock,
     pub ids: &'a dyn IdGenerator,
 }

@@ -5,7 +5,7 @@
 //! `(Component::NAME, id)` — the presence of an entry *is* the capability, and
 //! adding a new capability needs **no change here**. `meta` is the minimal `task`
 //! entity (timestamps). One `MemStore` backs every port via interior mutability.
-//! Also provides deterministic [`SeqIds`] and [`FixedClock`] for tests.
+//! Deterministic `Clock`/`IdGenerator` fixtures live in `tda-conformance`.
 //!
 //! ponytail: `RefCell` + `Box<dyn Any>` (single-threaded tests). Swap for `Mutex`
 //! if a binary ever shares a `MemStore` across threads.
@@ -16,8 +16,8 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use tda_core::{
-    Clock, Collection, CollectionRepository, Component, ComponentStore, Id, IdGenerator, Link,
-    LinkKind, LinkRepository, TaskEntityStore, Timestamp,
+    Collection, CollectionRepository, Component, ComponentStore, Filter, Id, Link, LinkKind,
+    LinkRepository, QueryEngine, TaskEntityStore, Timestamp, select_matching,
 };
 
 /// Every capability component, type-erased and keyed by `(Component::NAME, id)`.
@@ -139,45 +139,10 @@ impl CollectionRepository for MemStore {
     }
 }
 
-/// Sequential id generator: `t1`, `t2`, … Deterministic for tests/snapshots.
-pub struct SeqIds {
-    n: RefCell<u64>,
-}
-
-impl Default for SeqIds {
-    fn default() -> Self {
-        Self { n: RefCell::new(0) }
-    }
-}
-
-impl IdGenerator for SeqIds {
-    fn next_id(&self) -> Id {
-        let mut n = self.n.borrow_mut();
-        *n += 1;
-        Id::new(format!("t{n}"))
-    }
-}
-
-/// Clock pinned to a fixed instant and date — deterministic for tests.
-pub struct FixedClock {
-    pub now: Timestamp,
-    pub today: String,
-}
-
-impl Default for FixedClock {
-    fn default() -> Self {
-        Self {
-            now: Timestamp(0),
-            today: "2026-06-22".to_string(),
-        }
-    }
-}
-
-impl Clock for FixedClock {
-    fn now(&self) -> Timestamp {
-        self.now
-    }
-    fn today(&self) -> String {
-        self.today.clone()
+#[async_trait(?Send)]
+impl QueryEngine for MemStore {
+    /// No SQL to push to — reuse the core reference scan (spec §7).
+    async fn select(&self, filter: &Filter, today: &str) -> Vec<Id> {
+        select_matching(self, filter, today).await
     }
 }

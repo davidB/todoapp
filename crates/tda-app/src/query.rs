@@ -20,24 +20,15 @@ pub struct QueryHit {
 impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     pub async fn evaluate(&self, q: &Query) -> Vec<QueryHit> {
         let today = self.clock.today();
-        let within = match q.filter.within.as_ref() {
-            Some(id) => Some(self.descendants(id).await),
-            None => None,
-        };
-
-        // All async work (breadcrumb + priority key) happens here, before the
-        // sort: `sort_by` is sync, so each hit carries its precomputed
+        // Filter at the port (Turso → SQL `WHERE`; mem → reference scan); the
+        // sort + breadcrumb assembly below is shared and runs the same for any
+        // store. `sort_by` is sync, so each hit carries its precomputed
         // tree-priority key for the comparator.
-        // Query predicates touch notes/tags/assignments/due, so each candidate
-        // is assembled into a read-only snapshot (spec §7: `all` returns ids).
         let mut hits: Vec<(QueryHit, Vec<f64>)> = Vec::new();
-        for id in self.store.all().await {
+        for id in self.query.select(&q.filter, &today).await {
             let Ok(t) = self.snapshot(&id).await else {
                 continue;
             };
-            if !self.matches(&t, &q.filter, &today, within.as_ref()) {
-                continue;
-            }
             let path = self.breadcrumb(&t.id).await;
             let key = self.priority_key(&t.id).await;
             hits.push((QueryHit { task: t, path }, key));
@@ -108,50 +99,6 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
 
     // ---- internals --------------------------------------------------------
 
-    fn matches(
-        &self,
-        t: &TaskSnapshot,
-        f: &Filter,
-        today: &str,
-        within: Option<&std::collections::HashSet<Id>>,
-    ) -> bool {
-        if let Some(text) = &f.text {
-            let needle = text.to_lowercase();
-            let hay = format!("{} {}", t.title, t.notes.as_deref().unwrap_or("")).to_lowercase();
-            if !hay.contains(&needle) {
-                return false;
-            }
-        }
-        if !f.status.is_empty() && !f.status.contains(&t.status) {
-            return false;
-        }
-        if let Some(a) = &f.assignee
-            && !t.assignments.iter().any(|x| &x.actor == a)
-        {
-            return false;
-        }
-        if !f.tags.iter().all(|tag| t.tags.contains(tag)) {
-            return false;
-        }
-        if let Some(set) = within
-            && !set.contains(&t.id)
-        {
-            return false;
-        }
-        if let Some(due) = &f.due
-            && !due_matches(t.due_date.as_deref(), due, today)
-        {
-            return false;
-        }
-        if let Some(claimed) = f.claimed {
-            let any = t.assignments.iter().any(|a| a.claimed);
-            if any != claimed {
-                return false;
-            }
-        }
-        true
-    }
-
     /// Ancestor titles from root down to the immediate parent.
     async fn breadcrumb(&self, id: &Id) -> Vec<String> {
         let mut chain = Vec::new();
@@ -208,17 +155,6 @@ fn cmp_hits(a: &(QueryHit, Vec<f64>), b: &(QueryHit, Vec<f64>), keys: &[SortKey]
     }
     // stable, deterministic tie-break
     a.0.task.id.cmp(&b.0.task.id)
-}
-
-fn due_matches(due: Option<&str>, filter: &DueFilter, today: &str) -> bool {
-    let Some(d) = due else { return false };
-    match filter {
-        DueFilter::Today => d == today,
-        DueFilter::Overdue => d < today,
-        DueFilter::Before(x) => d < x.as_str(),
-        DueFilter::On(x) => d == x.as_str(),
-        DueFilter::After(x) => d > x.as_str(),
-    }
 }
 
 /// Lexicographic compare of position paths (f64 has no `Ord`).

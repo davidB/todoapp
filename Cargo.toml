@@ -13,6 +13,10 @@ authors = ["David Bernard"]
 tda-core = { path = "crates/tda-core" }
 tda-app = { path = "crates/tda-app" }
 tda-store-mem = { path = "crates/tda-store-mem" }
+tda-store-turso = { path = "crates/tda-store-turso" }
+tda-conformance = { path = "crates/tda-conformance" }
+# Turso: the async embedded SQLite-compatible engine (spec §6). Beta. Adapter-only.
+turso = "0.7.0-pre.10"
 
 # Not I/O: serialization, error, and async-glue helpers only (see spec §5).
 # async-trait is a proc-macro (dyn-safe async ports), not a runtime — allowed in core.

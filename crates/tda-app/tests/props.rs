@@ -10,8 +10,9 @@ use std::collections::HashMap;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use tda_app::{Anchor, Services};
+use tda_conformance::{FixedClock, SeqIds};
 use tda_core::{Id, LinkKind, Status};
-use tda_store_mem::{FixedClock, MemStore, SeqIds};
+use tda_store_mem::MemStore;
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -30,7 +31,7 @@ proptest! {
     fn blocks_graph_stays_acyclic(pairs in proptest::collection::vec((0usize..6, 0usize..6), 0..40)) {
         rt().block_on(async {
             let (store, clock, ids) = fresh();
-            let s = Services { store: &store, links: &store, collections: &store, clock: &clock, ids: &ids };
+            let s = Services { store: &store, links: &store, collections: &store, query: &store, clock: &clock, ids: &ids };
             let mut nodes: Vec<Id> = Vec::new();
             for _ in 0..6 {
                 nodes.push(s.create("n", None, Status::Todo, []).await.unwrap().id);
@@ -51,7 +52,7 @@ proptest! {
     fn child_order_is_consistent(n in 1usize..8, front in 0usize..8) {
         rt().block_on(async {
             let (store, clock, ids) = fresh();
-            let s = Services { store: &store, links: &store, collections: &store, clock: &clock, ids: &ids };
+            let s = Services { store: &store, links: &store, collections: &store, query: &store, clock: &clock, ids: &ids };
             let p = s.create("p", None, Status::Todo, []).await.unwrap();
             let mut kids: Vec<Id> = Vec::new();
             for _ in 0..n {
