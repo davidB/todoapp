@@ -109,7 +109,7 @@ fn due_matches(due: Option<&str>, filter: &DueFilter, today: &str) -> bool {
 }
 
 /// All descendants of `id` via `child` links (excludes `id`). Iterative.
-async fn descendants<St: LinkRepository>(store: &St, id: &Id) -> HashSet<Id> {
+pub async fn descendants<St: LinkRepository + ?Sized>(store: &St, id: &Id) -> HashSet<Id> {
     let mut seen = HashSet::new();
     let mut stack: Vec<Id> = store
         .outgoing(id, LinkKind::Child)

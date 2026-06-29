@@ -183,19 +183,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
 
     /// All descendants of `id` via `child` links (excludes `id`).
     pub async fn descendants(&self, id: &Id) -> HashSet<Id> {
-        let mut seen = HashSet::new();
-        let mut stack: Vec<Id> = self
-            .children_of(id)
-            .await
-            .into_iter()
-            .map(|l| l.to)
-            .collect();
-        while let Some(cur) = stack.pop() {
-            if seen.insert(cur.clone()) {
-                stack.extend(self.children_of(&cur).await.into_iter().map(|l| l.to));
-            }
-        }
-        seen
+        tda_core::descendants(self.links, id).await
     }
 
     /// Run a task-local command through `decide → apply → persist` (spec §5a),

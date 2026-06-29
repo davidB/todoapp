@@ -413,13 +413,17 @@ impl TaskEntityStore for TursoStore {
     }
 
     async fn all(&self) -> Vec<Id> {
-        let mut rows = self.conn.query("SELECT id FROM task", ()).await.unwrap();
-        let mut out = Vec::new();
-        while let Some(r) = rows.next().await.unwrap() {
-            out.push(Id::new(as_text(r.get_value(0).unwrap())));
-        }
-        out
+        let rows = self.conn.query("SELECT id FROM task", ()).await.unwrap();
+        collect_rows(rows, |r| Id::new(as_text(r.get_value(0).unwrap()))).await
     }
+}
+
+async fn collect_rows<T>(mut rows: turso::Rows, f: impl Fn(&turso::Row) -> T) -> Vec<T> {
+    let mut out = Vec::new();
+    while let Some(r) = rows.next().await.unwrap() {
+        out.push(f(&r));
+    }
+    out
 }
 
 fn row_to_link(r: &turso::Row) -> Link {
@@ -459,7 +463,7 @@ impl LinkRepository for TursoStore {
     }
 
     async fn outgoing(&self, from: &Id, kind: LinkKind) -> Vec<Link> {
-        let mut rows = self
+        let rows = self
             .conn
             .query(
                 "SELECT from_id,to_id,kind,position FROM link WHERE from_id=? AND kind=? ORDER BY position ASC",
@@ -467,15 +471,11 @@ impl LinkRepository for TursoStore {
             )
             .await
             .unwrap();
-        let mut out = Vec::new();
-        while let Some(r) = rows.next().await.unwrap() {
-            out.push(row_to_link(&r));
-        }
-        out
+        collect_rows(rows, row_to_link).await
     }
 
     async fn incoming(&self, to: &Id, kind: LinkKind) -> Vec<Link> {
-        let mut rows = self
+        let rows = self
             .conn
             .query(
                 "SELECT from_id,to_id,kind,position FROM link WHERE to_id=? AND kind=?",
@@ -483,11 +483,7 @@ impl LinkRepository for TursoStore {
             )
             .await
             .unwrap();
-        let mut out = Vec::new();
-        while let Some(r) = rows.next().await.unwrap() {
-            out.push(row_to_link(&r));
-        }
-        out
+        collect_rows(rows, row_to_link).await
     }
 }
 
@@ -560,16 +556,12 @@ impl CollectionRepository for TursoStore {
     }
 
     async fn all(&self) -> Vec<Collection> {
-        let mut rows = self
+        let rows = self
             .conn
             .query("SELECT id,name,kind,spec FROM collection", ())
             .await
             .unwrap();
-        let mut out = Vec::new();
-        while let Some(r) = rows.next().await.unwrap() {
-            out.push(row_to_collection(&r));
-        }
-        out
+        collect_rows(rows, row_to_collection).await
     }
 }
 
@@ -649,11 +641,7 @@ impl QueryEngine for TursoStore {
             sql.push_str(&clauses.join(" AND "));
         }
 
-        let mut rows = self.conn.query(&sql, params).await.unwrap();
-        let mut out = Vec::new();
-        while let Some(r) = rows.next().await.unwrap() {
-            out.push(Id::new(as_text(r.get_value(0).unwrap())));
-        }
-        out
+        let rows = self.conn.query(&sql, params).await.unwrap();
+        collect_rows(rows, |r| Id::new(as_text(r.get_value(0).unwrap()))).await
     }
 }
