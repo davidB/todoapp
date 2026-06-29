@@ -1,0 +1,473 @@
+//! Application state and event handling for the tda TUI.
+
+use std::collections::HashSet;
+
+use anyhow::Context as _;
+use chrono::Local;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use tda_app::{Anchor, QueryHit, Services};
+use tda_core::{Clock, Filter, Id, IdGenerator, Query, Status, Timestamp};
+use tda_store_turso::TursoStore;
+use ulid::Ulid;
+
+// ---- Clock & IdGenerator ----------------------------------------------------
+
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Timestamp {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        #[allow(clippy::cast_possible_truncation)]
+        Timestamp(ms as i64)
+    }
+    fn today(&self) -> String {
+        Local::now().format("%Y-%m-%d").to_string()
+    }
+}
+
+pub struct UlidGen;
+
+impl IdGenerator for UlidGen {
+    fn next_id(&self) -> Id {
+        Id::new(Ulid::new().to_string())
+    }
+}
+
+// ---- View types -------------------------------------------------------------
+
+/// One row in the rendered tree.
+#[derive(Clone)]
+pub struct VisibleItem {
+    pub id: Id,
+    pub title: String,
+    pub status: Status,
+    pub depth: usize,
+    pub has_children: bool,
+    pub is_expanded: bool,
+    pub is_blocked: bool,
+}
+
+#[derive(Clone)]
+pub enum View {
+    Tree,
+    List(Vec<QueryHit>),
+    Help,
+}
+
+#[derive(Clone)]
+pub enum InputMode {
+    AddChild(Id),
+    AddRoot,
+    EditTitle(Id),
+    Search,
+}
+
+// ---- AppState ---------------------------------------------------------------
+
+pub struct AppState {
+    pub store: TursoStore,
+    pub clock: SystemClock,
+    pub ids: UlidGen,
+    /// Flat, ordered list of visible items for the tree view (rebuilt after mutations).
+    pub items: Vec<VisibleItem>,
+    pub cursor: usize,
+    pub expanded: HashSet<Id>,
+    pub view: View,
+    /// Active input modal: (mode, typed text).
+    pub input: Option<(InputMode, String)>,
+    /// Transient one-line message shown in the status bar.
+    pub status_msg: Option<String>,
+}
+
+/// Build a `Services` bundle from individual field references so the borrow
+/// checker can see exactly which fields are in use (field-level disjoint borrows).
+fn make_svc<'a>(
+    store: &'a TursoStore,
+    clock: &'a SystemClock,
+    ids: &'a UlidGen,
+) -> Services<'a, TursoStore> {
+    Services {
+        store,
+        links: store,
+        collections: store,
+        query: store,
+        clock,
+        ids,
+    }
+}
+
+/// Rebuild the flat visible-item list by DFS over the tree.
+/// Takes fields separately so the caller can mutate `items`/`cursor` afterwards.
+/// ponytail: one async call per visible item for `is_blocked`; fine for a local tool.
+async fn build_visible_items(
+    store: &TursoStore,
+    clock: &SystemClock,
+    ids: &UlidGen,
+    expanded: &HashSet<Id>,
+) -> Vec<VisibleItem> {
+    let svc = make_svc(store, clock, ids);
+    let roots = svc.roots().await;
+    let mut items: Vec<VisibleItem> = Vec::new();
+    let mut stack: Vec<(Id, usize)> = roots.into_iter().rev().map(|id| (id, 0)).collect();
+
+    while let Some((id, depth)) = stack.pop() {
+        let Ok(snap) = svc.snapshot(&id).await else {
+            continue;
+        };
+        let children = svc.children_of(&id).await;
+        let has_children = !children.is_empty();
+        let is_expanded = expanded.contains(&id);
+        let is_blocked = svc.is_blocked(&id).await;
+
+        items.push(VisibleItem {
+            id: id.clone(),
+            title: snap.title,
+            status: snap.status,
+            depth,
+            has_children,
+            is_expanded,
+            is_blocked,
+        });
+
+        if is_expanded && has_children {
+            for child in children.iter().rev() {
+                stack.push((child.to.clone(), depth + 1));
+            }
+        }
+    }
+    items
+}
+
+impl AppState {
+    pub async fn new(store: TursoStore) -> anyhow::Result<Self> {
+        let mut app = Self {
+            store,
+            clock: SystemClock,
+            ids: UlidGen,
+            items: Vec::new(),
+            cursor: 0,
+            expanded: HashSet::new(),
+            view: View::Tree,
+            input: None,
+            status_msg: None,
+        };
+        app.rebuild().await;
+        Ok(app)
+    }
+
+    pub async fn rebuild(&mut self) {
+        let new_items =
+            build_visible_items(&self.store, &self.clock, &self.ids, &self.expanded).await;
+        self.items = new_items;
+        if self.cursor >= self.items.len() {
+            self.cursor = self.items.len().saturating_sub(1);
+        }
+    }
+
+    fn item_count(&self) -> usize {
+        match &self.view {
+            View::Tree | View::Help => self.items.len(),
+            View::List(hits) => hits.len(),
+        }
+    }
+
+    pub fn cursor_id(&self) -> Option<Id> {
+        self.items.get(self.cursor).map(|i| i.id.clone())
+    }
+
+    fn move_cursor(&mut self, down: bool) {
+        let len = self.item_count();
+        if len == 0 {
+            return;
+        }
+        if down {
+            self.cursor = (self.cursor + 1).min(len - 1);
+        } else {
+            self.cursor = self.cursor.saturating_sub(1);
+        }
+    }
+
+    /// Returns `false` to signal quit.
+    #[allow(clippy::too_many_lines)]
+    pub async fn handle_event(&mut self, event: crossterm::event::Event) -> anyhow::Result<bool> {
+        let crossterm::event::Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind,
+            ..
+        }) = event
+        else {
+            return Ok(true);
+        };
+        if kind != KeyEventKind::Press {
+            return Ok(true);
+        }
+        // Always quit on Ctrl+C.
+        if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(false);
+        }
+        if self.input.is_some() {
+            return self.handle_input_key(code, modifiers).await;
+        }
+        self.status_msg = None;
+        let in_tree = matches!(self.view, View::Tree);
+
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                if in_tree {
+                    return Ok(false);
+                }
+                self.view = View::Tree;
+                self.cursor = 0;
+            }
+            KeyCode::Char('?') => {
+                self.view = if matches!(self.view, View::Help) {
+                    View::Tree
+                } else {
+                    View::Help
+                };
+            }
+            // Navigation
+            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(true),
+            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(false),
+            KeyCode::Char('g') | KeyCode::Home => self.cursor = 0,
+            KeyCode::Char('G') | KeyCode::End => {
+                self.cursor = self.item_count().saturating_sub(1);
+            }
+            // Expand (tree only)
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter if in_tree => {
+                if let Some(item) = self.items.get(self.cursor)
+                    && item.has_children
+                {
+                    let id = item.id.clone();
+                    self.expanded.insert(id);
+                    self.rebuild().await;
+                }
+            }
+            // Collapse / jump to parent (tree only)
+            KeyCode::Char('h') | KeyCode::Left if in_tree => {
+                if let Some(item) = self.items.get(self.cursor).cloned() {
+                    if item.is_expanded {
+                        self.expanded.remove(&item.id);
+                        self.rebuild().await;
+                    } else if item.depth > 0 {
+                        let parent_depth = item.depth - 1;
+                        if let Some(pos) = self.items[..self.cursor]
+                            .iter()
+                            .rposition(|i| i.depth == parent_depth)
+                        {
+                            self.cursor = pos;
+                        }
+                    }
+                }
+            }
+            // Add child (tree only)
+            KeyCode::Char('a') if in_tree => {
+                if let Some(id) = self.cursor_id() {
+                    self.input = Some((InputMode::AddChild(id), String::new()));
+                }
+            }
+            // Add root task (tree only)
+            KeyCode::Char('A') if in_tree => {
+                self.input = Some((InputMode::AddRoot, String::new()));
+            }
+            // Edit title (tree only)
+            KeyCode::Char('e') if in_tree => {
+                if let Some(item) = self.items.get(self.cursor) {
+                    let id = item.id.clone();
+                    let title = item.title.clone();
+                    self.input = Some((InputMode::EditTitle(id), title));
+                }
+            }
+            // Cycle status (tree only)
+            KeyCode::Char(' ') if in_tree => {
+                self.cycle_status().await?;
+            }
+            // Claim (tree only)
+            KeyCode::Char('c') if in_tree => {
+                self.claim().await?;
+            }
+            // Reorder (tree only)
+            KeyCode::Char('J') if in_tree => {
+                self.reorder_sibling(true).await?;
+            }
+            KeyCode::Char('K') if in_tree => {
+                self.reorder_sibling(false).await?;
+            }
+            // Search (any view)
+            KeyCode::Char('/') => {
+                self.input = Some((InputMode::Search, String::new()));
+            }
+            // What-next (any view)
+            KeyCode::Char('n') => {
+                let hits = {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    svc.what_next().await
+                };
+                self.view = View::List(hits);
+                self.cursor = 0;
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    async fn handle_input_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> anyhow::Result<bool> {
+        match code {
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some((_, ref mut text)) = self.input {
+                    text.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some((_, ref mut text)) = self.input {
+                    text.pop();
+                }
+            }
+            KeyCode::Esc => {
+                self.input = None;
+            }
+            KeyCode::Enter => {
+                if let Some((mode, text)) = self.input.take() {
+                    let trimmed = text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        self.submit_input(mode, trimmed).await?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    async fn submit_input(&mut self, mode: InputMode, text: String) -> anyhow::Result<()> {
+        match mode {
+            InputMode::AddChild(parent_id) => {
+                let new_id = {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    svc.create(text, Some(&parent_id), Status::Draft, [])
+                        .await
+                        .context("create child")?
+                        .id
+                };
+                self.expanded.insert(parent_id);
+                self.rebuild().await;
+                if let Some(pos) = self.items.iter().position(|i| i.id == new_id) {
+                    self.cursor = pos;
+                }
+            }
+            InputMode::AddRoot => {
+                let new_id = {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    svc.create(text, None, Status::Draft, [])
+                        .await
+                        .context("create task")?
+                        .id
+                };
+                self.rebuild().await;
+                if let Some(pos) = self.items.iter().position(|i| i.id == new_id) {
+                    self.cursor = pos;
+                }
+            }
+            InputMode::EditTitle(id) => {
+                let result = {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    svc.set_title(&id, text).await
+                };
+                if let Err(e) = result {
+                    self.status_msg = Some(format!("edit: {e}"));
+                }
+                self.rebuild().await;
+            }
+            InputMode::Search => {
+                let hits = {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    svc.evaluate(&Query {
+                        filter: Filter {
+                            text: Some(text),
+                            ..Default::default()
+                        },
+                        sort: vec![],
+                    })
+                    .await
+                };
+                self.view = View::List(hits);
+                self.cursor = 0;
+            }
+        }
+        Ok(())
+    }
+
+    async fn cycle_status(&mut self) -> anyhow::Result<()> {
+        let Some(item) = self.items.get(self.cursor).cloned() else {
+            return Ok(());
+        };
+        let new_status = match item.status {
+            Status::Draft => Status::Todo,
+            Status::Todo => Status::Wip,
+            Status::Wip => Status::Done,
+            Status::Done => Status::Draft,
+        };
+        let result = {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            svc.set_status(&item.id, new_status).await
+        };
+        if let Err(e) = result {
+            self.status_msg = Some(format!("status: {e}"));
+        }
+        self.rebuild().await;
+        Ok(())
+    }
+
+    async fn claim(&mut self) -> anyhow::Result<()> {
+        let Some(item) = self.items.get(self.cursor).cloned() else {
+            return Ok(());
+        };
+        // ponytail: single-user TUI — fixed actor "me"; no auth in v1 (spec §2/§13 Q5)
+        let result = {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            svc.claim(&item.id, Id::new("me")).await
+        };
+        match result {
+            Ok(_) => self.rebuild().await,
+            Err(e) => self.status_msg = Some(format!("claim: {e}")),
+        }
+        Ok(())
+    }
+
+    async fn reorder_sibling(&mut self, down: bool) -> anyhow::Result<()> {
+        let Some(item) = self.items.get(self.cursor).cloned() else {
+            return Ok(());
+        };
+        let anchor = if down {
+            let start = (self.cursor + 1).min(self.items.len());
+            self.items[start..]
+                .iter()
+                .find(|i| i.depth == item.depth)
+                .map(|i| Anchor::After(i.id.clone()))
+        } else {
+            self.items[..self.cursor]
+                .iter()
+                .rfind(|i| i.depth == item.depth)
+                .map(|i| Anchor::Before(i.id.clone()))
+        };
+        if let Some(anchor) = anchor {
+            let result = {
+                let svc = make_svc(&self.store, &self.clock, &self.ids);
+                svc.reorder(&item.id, anchor).await
+            };
+            if let Err(e) = result {
+                self.status_msg = Some(format!("reorder: {e}"));
+            }
+            self.rebuild().await;
+        }
+        Ok(())
+    }
+}

@@ -27,6 +27,13 @@ insta = { version = "1", features = ["json"] }
 proptest = "1"
 # tokio is a runtime (I/O): test-only in tda-app; never a tda-core/tda-app normal dep.
 tokio = { version = "1", features = ["rt", "macros"] }
+# TUI binary deps (tda-tui)
+anyhow = "1"
+chrono = "0.4"
+crossterm = { version = "0.28", features = ["event-stream"] }
+dirs = "5"
+ratatui = "0.29"
+ulid = "1"
 
 [workspace.lints.clippy]
 cargo = { level = "allow", priority = -1 }

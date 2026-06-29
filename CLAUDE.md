@@ -5,19 +5,29 @@
 of truth** (decisions are marked `[DECISION]`, open ones in §13); cite its
 sections when explaining choices.
 
-**Status:** M0 (workspace skeleton) and M1 (domain core + use cases + in-memory
-store) are done and green. Next is M2 (Turso persistence). M3–M6 follow §10.
+**Status:** M0–M2 done and green. M4 (TUI) delivered next (before M3 CLI, per user decision). M3/M5/M6 follow §10.
 
 ## Workspace
 
 ```
 crates/
-  tda-core/      # domain: model, capabilities, the decider, PORTS (traits). No I/O deps.
-  tda-app/       # use cases: async orchestration of core + ports
-  tda-store-mem/ # adapter: in-memory store (per-capability component maps), tests + dev
+  tda-core/        # domain: model, capabilities, the decider, PORTS (traits). No I/O deps.
+  tda-app/         # use cases: async orchestration of core + ports
+  tda-store-mem/   # adapter: in-memory store (per-capability component maps), tests + dev
+  tda-store-turso/ # adapter: Turso/SQLite persistence (M2)
+  tda-conformance/ # shared conformance test suite (macro runs against both stores)
+  tda-tui/         # adapter: ratatui TUI binary `tda` (M4) — DB at ~/.local/share/tda/tda.db
 ```
-Later adapters (per §5): `tda-store-turso`, `tda-cli`, `tda-tui`, `tda-api`,
-`tda-mcp`, `tda-ui-core`.
+Later adapters (per §5): `tda-cli`, `tda-api`, `tda-mcp`, `tda-ui-core`.
+
+### tda-tui conventions (M4)
+- `AppState` owns `TursoStore`; `make_svc(store, clock, ids)` builds `Services` from
+  individual field references (field-level borrows, no `Box::leak`).
+- `build_visible_items(store, clock, ids, expanded)` is a free async fn for tree rebuild;
+  the caller assigns the result to `self.items` after borrows are released.
+- `SystemClock` (chrono `Local::now`) + `UlidGen` (ulid crate) are the real impls.
+- DB path: `$TDA_DB` env var or `~/.local/share/tda/tda.db`.
+- Actor for claim: fixed `Id("me")` — single-user, no auth (spec §2/§13 Q5).
 
 ## Inviolable: the dependency rule (§5)
 
