@@ -14,6 +14,7 @@ tda-app = { path = "crates/tda-app" }
 tda-store-mem = { path = "crates/tda-store-mem" }
 tda-store-turso = { path = "crates/tda-store-turso" }
 tda-conformance = { path = "crates/tda-conformance" }
+tda-tui = { path = "crates/tda-tui" }
 # Turso: the async embedded SQLite-compatible engine (spec §6). Beta. Adapter-only.
 turso = "0.7.0-pre.10"
 
@@ -29,6 +30,7 @@ proptest = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
 # TUI binary deps (tda-tui)
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 chrono = "0.4"
 crossterm = { version = "0.28", features = ["event-stream"] }
 dirs = "5"

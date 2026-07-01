@@ -11,7 +11,7 @@ use tda_core::{
 use crate::service::{Services, TaskSnapshot};
 
 /// A task in a query result, with its ancestor titles (root → parent).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct QueryHit {
     pub task: TaskSnapshot,
     pub path: Vec<String>,

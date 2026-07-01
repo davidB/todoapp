@@ -1,4 +1,4 @@
-//! tda TUI entry point (spec §10 M4): open the Turso store, run the event loop.
+//! tda TUI (spec §10 M4): open the Turso store, run the event loop. Called from tda-cli's `tui` subcommand.
 
 mod app;
 mod ui;
@@ -21,8 +21,7 @@ fn db_path() -> PathBuf {
     )
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+pub async fn run() -> anyhow::Result<()> {
     let path = db_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create db directory")?;
@@ -32,12 +31,15 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = AppState::new(store).await?;
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut app).await;
+    let result = run_loop(&mut terminal, &mut app).await;
     ratatui::restore();
     result
 }
 
-async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut AppState) -> anyhow::Result<()> {
+async fn run_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut AppState,
+) -> anyhow::Result<()> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;
         // spawn_blocking keeps the current_thread runtime unblocked while waiting
