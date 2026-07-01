@@ -10,6 +10,8 @@ use tda_core::{Clock, Filter, Id, IdGenerator, Query, Status, Timestamp};
 use tda_store_turso::TursoStore;
 use ulid::Ulid;
 
+use crate::keymap::{Action, Keymap};
+
 // ---- Clock & IdGenerator ----------------------------------------------------
 
 pub struct SystemClock;
@@ -80,6 +82,7 @@ pub struct AppState {
     pub input: Option<(InputMode, String)>,
     /// Transient one-line message shown in the status bar.
     pub status_msg: Option<String>,
+    pub keymap: Keymap,
 }
 
 /// Build a `Services` bundle from individual field references so the borrow
@@ -142,7 +145,7 @@ async fn build_visible_items(
 }
 
 impl AppState {
-    pub async fn new(store: TursoStore) -> anyhow::Result<Self> {
+    pub async fn new(store: TursoStore, keymap: Keymap) -> anyhow::Result<Self> {
         let mut app = Self {
             store,
             clock: SystemClock,
@@ -153,6 +156,7 @@ impl AppState {
             view: View::Tree,
             input: None,
             status_msg: None,
+            keymap,
         };
         app.rebuild().await;
         Ok(app)
@@ -215,30 +219,32 @@ impl AppState {
         self.status_msg = None;
         let in_tree = matches!(self.view, View::Tree);
 
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+        let Some(action) = self.keymap.lookup(code, modifiers) else {
+            return Ok(true);
+        };
+
+        match action {
+            Action::Quit => {
                 if in_tree {
                     return Ok(false);
                 }
                 self.view = View::Tree;
                 self.cursor = 0;
             }
-            KeyCode::Char('?') => {
+            Action::ToggleHelp => {
                 self.view = if matches!(self.view, View::Help) {
                     View::Tree
                 } else {
                     View::Help
                 };
             }
-            // Navigation
-            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(true),
-            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(false),
-            KeyCode::Char('g') | KeyCode::Home => self.cursor = 0,
-            KeyCode::Char('G') | KeyCode::End => {
-                self.cursor = self.item_count().saturating_sub(1);
-            }
+            // Navigation (any view)
+            Action::MoveDown => self.move_cursor(true),
+            Action::MoveUp => self.move_cursor(false),
+            Action::JumpFirst => self.cursor = 0,
+            Action::JumpLast => self.cursor = self.item_count().saturating_sub(1),
             // Expand (tree only)
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter if in_tree => {
+            Action::Expand if in_tree => {
                 if let Some(item) = self.items.get(self.cursor)
                     && item.has_children
                 {
@@ -248,7 +254,7 @@ impl AppState {
                 }
             }
             // Collapse / jump to parent (tree only)
-            KeyCode::Char('h') | KeyCode::Left if in_tree => {
+            Action::Collapse if in_tree => {
                 if let Some(item) = self.items.get(self.cursor).cloned() {
                     if item.is_expanded {
                         self.expanded.remove(&item.id);
@@ -264,18 +270,25 @@ impl AppState {
                     }
                 }
             }
-            // Add child (tree only)
-            KeyCode::Char('a') if in_tree => {
-                if let Some(id) = self.cursor_id() {
-                    self.input = Some((InputMode::AddChild(id), String::new()));
-                }
+            // Add sibling of cursor (or root task if list is empty) — tree only.
+            Action::AddSibling if in_tree => {
+                self.input = Some(match self.cursor_id() {
+                    Some(id) => {
+                        let svc = make_svc(&self.store, &self.clock, &self.ids);
+                        match svc.parent_of(&id).await {
+                            Some(parent_id) => (InputMode::AddChild(parent_id), String::new()),
+                            None => (InputMode::AddRoot, String::new()),
+                        }
+                    }
+                    None => (InputMode::AddRoot, String::new()),
+                });
             }
             // Add root task (tree only)
-            KeyCode::Char('A') if in_tree => {
+            Action::AddRoot if in_tree => {
                 self.input = Some((InputMode::AddRoot, String::new()));
             }
             // Edit title (tree only)
-            KeyCode::Char('e') if in_tree => {
+            Action::EditTitle if in_tree => {
                 if let Some(item) = self.items.get(self.cursor) {
                     let id = item.id.clone();
                     let title = item.title.clone();
@@ -283,26 +296,33 @@ impl AppState {
                 }
             }
             // Cycle status (tree only)
-            KeyCode::Char(' ') if in_tree => {
+            Action::CycleStatus if in_tree => {
                 self.cycle_status().await?;
             }
             // Claim (tree only)
-            KeyCode::Char('c') if in_tree => {
+            Action::Claim if in_tree => {
                 self.claim().await?;
             }
-            // Reorder (tree only)
-            KeyCode::Char('J') if in_tree => {
+            // Reorder among siblings (tree only)
+            Action::ReorderDown if in_tree => {
                 self.reorder_sibling(true).await?;
             }
-            KeyCode::Char('K') if in_tree => {
+            Action::ReorderUp if in_tree => {
                 self.reorder_sibling(false).await?;
             }
+            // Reparent (tree only)
+            Action::ReparentIn if in_tree => {
+                self.reparent_in().await?;
+            }
+            Action::ReparentOut if in_tree => {
+                self.reparent_out().await?;
+            }
             // Search (any view)
-            KeyCode::Char('/') => {
+            Action::Search => {
                 self.input = Some((InputMode::Search, String::new()));
             }
             // What-next (any view)
-            KeyCode::Char('n') => {
+            Action::WhatNext => {
                 let hits = {
                     let svc = make_svc(&self.store, &self.clock, &self.ids);
                     svc.what_next().await
@@ -467,6 +487,71 @@ impl AppState {
                 self.status_msg = Some(format!("reorder: {e}"));
             }
             self.rebuild().await;
+            if let Some(pos) = self.items.iter().position(|i| i.id == item.id) {
+                self.cursor = pos;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reparent the cursor task under the sibling immediately above it (indent).
+    async fn reparent_in(&mut self) -> anyhow::Result<()> {
+        let Some(item) = self.items.get(self.cursor).cloned() else {
+            return Ok(());
+        };
+        let Some(prev_sibling) = self.items[..self.cursor]
+            .iter()
+            .rfind(|i| i.depth == item.depth)
+            .cloned()
+        else {
+            self.status_msg = Some("reparent: no sibling above".to_string());
+            return Ok(());
+        };
+        let result = {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            svc.move_task(&item.id, &prev_sibling.id, None).await
+        };
+        match result {
+            Ok(()) => {
+                self.expanded.insert(prev_sibling.id);
+                self.rebuild().await;
+                if let Some(pos) = self.items.iter().position(|i| i.id == item.id) {
+                    self.cursor = pos;
+                }
+            }
+            Err(e) => self.status_msg = Some(format!("reparent: {e}")),
+        }
+        Ok(())
+    }
+
+    /// Move the cursor task to its parent's level, right after the former
+    /// parent (outdent).
+    async fn reparent_out(&mut self) -> anyhow::Result<()> {
+        let Some(item) = self.items.get(self.cursor).cloned() else {
+            return Ok(());
+        };
+        let outcome = {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            match svc.parent_of(&item.id).await {
+                None => None,
+                Some(parent_id) => {
+                    let grandparent = svc.parent_of(&parent_id).await.unwrap_or_else(Id::root);
+                    Some(
+                        svc.move_task(&item.id, &grandparent, Some(Anchor::After(parent_id)))
+                            .await,
+                    )
+                }
+            }
+        };
+        match outcome {
+            None => self.status_msg = Some("reparent: already at top level".to_string()),
+            Some(Ok(())) => {
+                self.rebuild().await;
+                if let Some(pos) = self.items.iter().position(|i| i.id == item.id) {
+                    self.cursor = pos;
+                }
+            }
+            Some(Err(e)) => self.status_msg = Some(format!("reparent: {e}")),
         }
         Ok(())
     }

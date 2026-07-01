@@ -9,6 +9,7 @@ use ratatui::{
 use tda_core::Status;
 
 use crate::app::{AppState, InputMode, View, VisibleItem};
+use crate::keymap::{Action, Keymap};
 
 pub fn render(f: &mut Frame, app: &AppState) {
     let area = f.area();
@@ -30,7 +31,7 @@ pub fn render(f: &mut Frame, app: &AppState) {
         render_input_modal(f, area, mode, text);
     }
     if matches!(app.view, View::Help) {
-        render_help(f, area);
+        render_help(f, area, &app.keymap);
     }
 }
 
@@ -89,13 +90,42 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[tda_app::Query
 }
 
 fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
-    let msg = app.status_msg.as_deref().unwrap_or(
-        "j/k↑↓ nav · h/l←→ fold · a add · e edit · Space status · c claim · J/K reorder · / search · n next · ? help · q quit",
-    );
+    let hint;
+    let msg: &str = if let Some(m) = &app.status_msg {
+        m.as_str()
+    } else {
+        hint = default_hint(&app.keymap);
+        &hint
+    };
     f.render_widget(
         Paragraph::new(msg).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+/// Build the bottom-bar hint from the live keymap (first bound key per action).
+fn default_hint(keymap: &Keymap) -> String {
+    let k = |a: Action| keymap.keys_for(a).into_iter().next().unwrap_or_default();
+    format!(
+        "{}/{} nav · {}/{} fold · {} add · {} edit · {} status · {} claim · \
+         {}/{} reorder · {}/{} reparent · {} search · {} next · {} help · {} quit",
+        k(Action::MoveUp),
+        k(Action::MoveDown),
+        k(Action::Collapse),
+        k(Action::Expand),
+        k(Action::AddSibling),
+        k(Action::EditTitle),
+        k(Action::CycleStatus),
+        k(Action::Claim),
+        k(Action::ReorderUp),
+        k(Action::ReorderDown),
+        k(Action::ReparentIn),
+        k(Action::ReparentOut),
+        k(Action::Search),
+        k(Action::WhatNext),
+        k(Action::ToggleHelp),
+        k(Action::Quit),
+    )
 }
 
 fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, text: &str) {
@@ -112,30 +142,16 @@ fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, text: &str) {
     f.render_widget(p, popup);
 }
 
-fn render_help(f: &mut Frame, area: Rect) {
-    let rows: Vec<Row> = [
-        ("j / ↓", "move down"),
-        ("k / ↑", "move up"),
-        ("h / ←", "collapse / jump to parent"),
-        ("l / → / Enter", "expand"),
-        ("g / Home", "first item"),
-        ("G / End", "last item"),
-        ("a", "add child under cursor"),
-        ("A", "add root task"),
-        ("e", "edit title"),
-        ("Space", "cycle status draft→todo→wip→done"),
-        ("c", "claim (→ wip, single-user 'me')"),
-        ("J / K", "reorder down / up among siblings"),
-        ("/", "text search"),
-        ("n", "what-next (status:todo by priority)"),
-        ("? / Esc / q", "help / back / quit"),
-    ]
-    .iter()
-    .map(|(k, v)| Row::new([*k, *v]))
-    .collect();
+fn render_help(f: &mut Frame, area: Rect, keymap: &Keymap) {
+    let rows: Vec<Row> = Action::iter()
+        .map(|action| {
+            let keys = keymap.keys_for(action).join(" / ");
+            Row::new([keys, action.description().to_string()])
+        })
+        .collect();
 
-    let popup = centered_rect(area, 62, 19);
-    let table = Table::new(rows, [Constraint::Length(18), Constraint::Fill(1)])
+    let popup = centered_rect(area, 62, u16::try_from(rows.len() + 2).unwrap_or(u16::MAX));
+    let table = Table::new(rows, [Constraint::Length(20), Constraint::Fill(1)])
         .block(Block::default().borders(Borders::ALL).title(" help "));
     f.render_widget(Clear, popup);
     f.render_widget(table, popup);
