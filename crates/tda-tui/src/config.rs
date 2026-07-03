@@ -61,6 +61,8 @@ pub enum ColumnKind {
     Assignee,
     Estimate,
     Elapsed,
+    Tags,
+    Id,
 }
 
 impl ColumnKind {
@@ -72,6 +74,8 @@ impl ColumnKind {
         ("assignee", ColumnKind::Assignee, "assignee"),
         ("estimate", ColumnKind::Estimate, "estimate"),
         ("elapsed", ColumnKind::Elapsed, "elapsed"),
+        ("tags", ColumnKind::Tags, "tags"),
+        ("id", ColumnKind::Id, "id"),
     ];
 
     fn from_name(name: &str) -> Option<ColumnKind> {

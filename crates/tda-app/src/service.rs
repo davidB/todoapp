@@ -57,9 +57,34 @@ pub enum Error {
     #[from(skip)]
     #[display("import error: {_0}")]
     Import(#[error(not(source))] String),
+    #[from(skip)]
+    #[display("ambiguous id: {_0}")]
+    AmbiguousId(#[error(not(source))] String),
 }
 
 impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
+    /// Resolve a user-typed id or short prefix (git/jj-style abbreviation,
+    /// spec-independent — see [`tda_core::resolve_id_prefix`]) against every
+    /// id currently in the store. The CLI/TUI entry point for letting a human
+    /// type a short id instead of the full ULID.
+    pub async fn resolve_id(&self, typed: &str) -> Result<Id, Error> {
+        let ids = self.store.all().await;
+        match tda_core::resolve_id_prefix(&ids, typed) {
+            tda_core::ResolvedId::Found(id) => Ok(id),
+            tda_core::ResolvedId::NotFound => Err(Error::NotFound(Id::new(typed))),
+            tda_core::ResolvedId::Ambiguous(matches) => {
+                let candidates = matches
+                    .iter()
+                    .map(Id::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(Error::AmbiguousId(format!(
+                    "{typed:?} matches {candidates}"
+                )))
+            }
+        }
+    }
+
     /// Assemble a read-only [`TaskSnapshot`] from the task's components.
     pub async fn snapshot(&self, id: &Id) -> Result<TaskSnapshot, Error> {
         let (created_at, updated_at) = self

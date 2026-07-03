@@ -6,10 +6,12 @@ mod command;
 mod model;
 mod ports;
 mod query;
+mod short_id;
 mod temporal;
 
 pub use command::*;
 pub use model::*;
 pub use ports::*;
 pub use query::*;
+pub use short_id::*;
 pub use temporal::*;

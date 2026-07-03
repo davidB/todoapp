@@ -36,7 +36,7 @@ struct UlidGen;
 
 impl IdGenerator for UlidGen {
     fn next_id(&self) -> Id {
-        Id::new(Ulid::new().to_string())
+        Id::new(Ulid::new().to_string().to_lowercase())
     }
 }
 

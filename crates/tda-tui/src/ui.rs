@@ -74,8 +74,8 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
 fn column_width(kind: ColumnKind) -> u16 {
     match kind {
         ColumnKind::Status | ColumnKind::Due | ColumnKind::Eta => 10,
-        ColumnKind::Assignee => 16,
-        ColumnKind::Estimate | ColumnKind::Elapsed => 8,
+        ColumnKind::Assignee | ColumnKind::Tags => 16,
+        ColumnKind::Estimate | ColumnKind::Elapsed | ColumnKind::Id => 8,
     }
 }
 
@@ -124,6 +124,17 @@ fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'
             app.config.days_per_week,
         )),
         ColumnKind::Elapsed => Cell::from(item.elapsed.to_string()),
+        ColumnKind::Tags => Cell::from(if item.tags.is_empty() {
+            "-".to_string()
+        } else {
+            item.tags.clone()
+        }),
+        ColumnKind::Id => Cell::from(
+            app.short_ids
+                .get(&item.id)
+                .cloned()
+                .unwrap_or_else(|| item.id.to_string()),
+        ),
     }
 }
 
@@ -351,7 +362,7 @@ mod tests {
         app.rebuild().await;
         app.cursor = app.items.iter().position(|i| i.title == "Other").unwrap();
 
-        let backend = TestBackend::new(100, 10);
+        let backend = TestBackend::new(130, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| render(f, &app)).unwrap();
         let rendered = terminal

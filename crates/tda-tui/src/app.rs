@@ -1,12 +1,13 @@
 //! Application state and event handling for the tda TUI.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tda_app::{Anchor, QueryHit, Services};
 use tda_core::{
-    Assignment, Clock, Date, Due, Duration, Filter, Id, IdGenerator, Query, Status, Timestamp,
+    Assignment, Clock, Date, Due, Duration, Filter, Id, IdGenerator, Query, Status,
+    TaskEntityStore, Timestamp, shortest_unique_prefixes,
 };
 use tda_store_turso::TursoStore;
 use ulid::Ulid;
@@ -38,7 +39,7 @@ pub struct UlidGen;
 
 impl IdGenerator for UlidGen {
     fn next_id(&self) -> Id {
-        Id::new(Ulid::new().to_string())
+        Id::new(Ulid::new().to_string().to_lowercase())
     }
 }
 
@@ -64,6 +65,7 @@ pub struct VisibleItem {
     pub assignees: String,
     pub estimate: Duration,
     pub elapsed: Duration,
+    pub tags: String,
 }
 
 #[derive(Clone)]
@@ -80,23 +82,26 @@ pub enum InputMode {
     Search,
 }
 
-/// Field labels for `TaskEditForm`, in `fields` order.
-pub const EDIT_FORM_LABELS: [&str; 5] = [
+/// Field labels for `TaskEditForm`, in `fields` order. `id` is shown for
+/// reference but not written back on save (see `submit_edit_form`).
+pub const EDIT_FORM_LABELS: [&str; 7] = [
     "title",
     "notes",
     "due (YYYY-MM-DD[ HH:MM])",
     "estimate (min)",
     "assignee",
+    "tags",
+    "id (read-only)",
 ];
 
-/// The multi-field task edit dialog (title/notes/due/estimate/assignee),
+/// The multi-field task edit dialog (title/notes/due/estimate/assignee/tags/id),
 /// opened by `Action::EditTitle`. Separate from `InputMode`/`input` since
 /// those are single-line; this carries one buffer per field plus which one
 /// is focused.
 #[derive(Clone)]
 pub struct TaskEditForm {
     pub id: Id,
-    pub fields: [String; 5],
+    pub fields: [String; 7],
     pub focus: usize,
 }
 
@@ -108,6 +113,9 @@ pub struct AppState {
     pub ids: UlidGen,
     /// Flat, ordered list of visible items for the tree view (rebuilt after mutations).
     pub items: Vec<VisibleItem>,
+    /// Shortest unique prefix per task id (git/jj-style abbreviation),
+    /// recomputed against *all* ids (not just `items`) on every `rebuild`.
+    pub short_ids: HashMap<Id, String>,
     pub cursor: usize,
     pub expanded: HashSet<Id>,
     pub view: View,
@@ -185,6 +193,7 @@ async fn build_visible_items(
             .map(Id::as_str)
             .collect::<Vec<_>>()
             .join(", ");
+        let tags = snap.tags.iter().cloned().collect::<Vec<_>>().join(", ");
 
         items.push(VisibleItem {
             id: id.clone(),
@@ -201,6 +210,7 @@ async fn build_visible_items(
             assignees,
             estimate: agg.estimate,
             elapsed: agg.time_spent,
+            tags,
         });
 
         if is_expanded && has_children {
@@ -235,6 +245,31 @@ fn diff_assignees(current: &[Assignment], text: &str) -> (Vec<Id>, Vec<Id>) {
     (to_assign, to_unassign)
 }
 
+/// Diff a comma-separated tag field against a task's current tags:
+/// `(to_add, to_remove)`.
+fn diff_tags(
+    current: &std::collections::BTreeSet<String>,
+    text: &str,
+) -> (Vec<String>, Vec<String>) {
+    let wanted: Vec<String> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    let to_add = wanted
+        .iter()
+        .filter(|t| !current.contains(*t))
+        .cloned()
+        .collect();
+    let to_remove = current
+        .iter()
+        .filter(|t| !wanted.contains(t))
+        .cloned()
+        .collect();
+    (to_add, to_remove)
+}
+
 impl AppState {
     pub async fn new(store: TursoStore, keymap: Keymap, config: Config) -> anyhow::Result<Self> {
         let mut app = Self {
@@ -242,6 +277,7 @@ impl AppState {
             clock: SystemClock,
             ids: UlidGen,
             items: Vec::new(),
+            short_ids: HashMap::new(),
             cursor: 0,
             expanded: HashSet::new(),
             view: View::Tree,
@@ -266,6 +302,7 @@ impl AppState {
         )
         .await;
         self.items = new_items;
+        self.short_ids = shortest_unique_prefixes(&self.store.all().await);
         if self.cursor >= self.items.len() {
             self.cursor = self.items.len().saturating_sub(1);
         }
@@ -425,6 +462,12 @@ impl AppState {
                             .map(|a| a.actor.as_str())
                             .collect::<Vec<_>>()
                             .join(", ");
+                        let tags = snap.tags.iter().cloned().collect::<Vec<_>>().join(", ");
+                        let id_display = self
+                            .short_ids
+                            .get(&id)
+                            .cloned()
+                            .unwrap_or_else(|| id.to_string());
                         self.edit_form = Some(TaskEditForm {
                             id,
                             fields: [
@@ -441,6 +484,8 @@ impl AppState {
                                     })
                                     .unwrap_or_default(),
                                 assignee,
+                                tags,
+                                id_display,
                             ],
                             focus: 0,
                         });
@@ -607,7 +652,7 @@ impl AppState {
     }
 
     async fn submit_edit_form(&mut self, form: TaskEditForm) -> anyhow::Result<()> {
-        let [title, notes, due, estimate, assignee] = form.fields.clone();
+        let [title, notes, due, estimate, assignee, tags, _id] = form.fields.clone();
         let title = title.trim().to_string();
         if title.is_empty() {
             self.status_msg = Some("edit: title required".to_string());
@@ -651,6 +696,10 @@ impl AppState {
             Ok(snap) => diff_assignees(&snap.assignments, &assignee),
             Err(_) => (Vec::new(), Vec::new()),
         };
+        let (to_add_tags, to_remove_tags) = match &snap {
+            Ok(snap) => diff_tags(&snap.tags, &tags),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
 
         let notes = notes.trim();
         let result = svc
@@ -667,6 +716,12 @@ impl AppState {
         }
         for actor in to_unassign {
             let _ = svc.unassign(&form.id, actor).await;
+        }
+        for tag in to_add_tags {
+            let _ = svc.add_tag(&form.id, tag).await;
+        }
+        for tag in to_remove_tags {
+            let _ = svc.remove_tag(&form.id, tag).await;
         }
         if let Err(e) = result {
             self.status_msg = Some(format!("edit: {e}"));

@@ -1,7 +1,9 @@
 # Default tda-tui general config. Copy to ~/.config/tda/config.toml (or
 # $TDA_CONFIG) and edit to retune.
 [columns]
-order = ["status", "due", "eta", "assignee", "estimate", "elapsed"]
+# "id" shows the shortest unique prefix (git/jj-style abbreviation), usable
+# to target a task from the future CLI.
+order = ["status", "due", "eta", "assignee", "estimate", "elapsed", "tags", "id"]
 
 [schedule]
 # Work calendar used to project the `eta` column: hours of capacity per work
