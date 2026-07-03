@@ -303,6 +303,30 @@ impl AppState {
                     self.rebuild().await;
                 }
             }
+            // Open search/what-next result in the tree, cursor on the selected task.
+            Action::Expand => {
+                let View::List(hits) = &self.view else {
+                    return Ok(true);
+                };
+                let Some(id) = hits.get(self.cursor).map(|h| h.task.id.clone()) else {
+                    return Ok(true);
+                };
+                let mut ancestors = Vec::new();
+                {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    let mut cur = id.clone();
+                    while let Some(parent_id) = svc.parent_of(&cur).await {
+                        ancestors.push(parent_id.clone());
+                        cur = parent_id;
+                    }
+                }
+                self.expanded.extend(ancestors);
+                self.rebuild().await;
+                self.view = View::Tree;
+                if let Some(pos) = self.items.iter().position(|i| i.id == id) {
+                    self.cursor = pos;
+                }
+            }
             // Collapse / jump to parent (tree only)
             Action::Collapse if in_tree => {
                 if let Some(item) = self.items.get(self.cursor).cloned() {
