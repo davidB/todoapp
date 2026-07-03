@@ -192,7 +192,7 @@ macro_rules! conformance_suite {
                     .create("a", Some(&root.id), Status::Done, [])
                     .await
                     .unwrap();
-                let _b = s
+                let b = s
                     .create("b", Some(&root.id), Status::Todo, [])
                     .await
                     .unwrap();
@@ -208,12 +208,22 @@ macro_rules! conformance_suite {
                 s.set_due(&root.id, Some(Date::parse("2026-06-30").unwrap()))
                     .await
                     .unwrap();
+                s.set_estimate(&b.id, Some(Duration::from_minutes(20)))
+                    .await
+                    .unwrap();
+                s.assign(&b.id, Id::new("alice")).await.unwrap();
                 let agg = s.aggregate(&root.id).await.unwrap();
                 assert_eq!(agg.total, 3);
                 assert_eq!(agg.done, 1);
-                assert_eq!(agg.eta_minutes, Duration::from_minutes(30));
-                assert_eq!(agg.time_spent_minutes, Duration::from_minutes(25));
+                assert_eq!(agg.estimate, Duration::from_minutes(50));
+                // `a` is Done, so its 30m estimate is excluded from `remaining`.
+                assert_eq!(agg.remaining, Duration::from_minutes(20));
+                assert_eq!(agg.time_spent, Duration::from_minutes(25));
                 assert_eq!(agg.earliest_due, Some(Date::parse("2026-06-30").unwrap()));
+                assert_eq!(
+                    agg.assignees,
+                    std::collections::BTreeSet::from([Id::new("alice")])
+                );
             }
 
             #[tokio::test]

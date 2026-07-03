@@ -1,0 +1,10 @@
+# Default tda-tui general config. Copy to ~/.config/tda/config.toml (or
+# $TDA_CONFIG) and edit to retune.
+[columns]
+order = ["status", "due", "eta", "assignee", "estimate", "elapsed"]
+
+[schedule]
+# Work calendar used to project the `eta` column: hours of capacity per work
+# day, and how many days per week (Mon-anchored) count as workdays.
+hours_per_day = 8.0
+days_per_week = 5

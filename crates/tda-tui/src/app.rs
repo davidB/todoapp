@@ -5,11 +5,13 @@ use std::collections::HashSet;
 use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tda_app::{Anchor, QueryHit, Services};
-use tda_core::{Clock, Date, Filter, Id, IdGenerator, Query, Status, Timestamp};
+use tda_core::{Clock, Date, Duration, Filter, Id, IdGenerator, Query, Status, Timestamp};
 use tda_store_turso::TursoStore;
 use ulid::Ulid;
 
+use crate::config::Config;
 use crate::keymap::{Action, Keymap};
+use crate::schedule::project_finish_date;
 
 // ---- Clock & IdGenerator ----------------------------------------------------
 
@@ -39,7 +41,9 @@ impl IdGenerator for UlidGen {
 
 // ---- View types -------------------------------------------------------------
 
-/// One row in the rendered tree.
+/// One row in the rendered tree table. The non-tree columns are aggregates
+/// over the task + its descendants (`Services::aggregate`, spec-driven: eta
+/// is `max(due, projected finish)`, red when the projection overruns `due`).
 #[derive(Clone)]
 pub struct VisibleItem {
     pub id: Id,
@@ -49,6 +53,14 @@ pub struct VisibleItem {
     pub has_children: bool,
     pub is_expanded: bool,
     pub is_blocked: bool,
+    pub done: usize,
+    pub total: usize,
+    pub due: Option<Date>,
+    /// `(projected/effective eta date, true if it overruns `due`)`.
+    pub eta: Option<(Date, bool)>,
+    pub assignees: String,
+    pub estimate: Duration,
+    pub elapsed: Duration,
 }
 
 #[derive(Clone)]
@@ -82,6 +94,7 @@ pub struct AppState {
     /// Transient one-line message shown in the status bar.
     pub status_msg: Option<String>,
     pub keymap: Keymap,
+    pub config: Config,
 }
 
 /// Build a `Services` bundle from individual field references so the borrow
@@ -103,14 +116,17 @@ fn make_svc<'a>(
 
 /// Rebuild the flat visible-item list by DFS over the tree.
 /// Takes fields separately so the caller can mutate `items`/`cursor` afterwards.
-/// ponytail: one async call per visible item for `is_blocked`; fine for a local tool.
+/// ponytail: one async call per visible item for `is_blocked`/`aggregate`; fine
+/// for a local tool.
 async fn build_visible_items(
     store: &TursoStore,
     clock: &SystemClock,
     ids: &UlidGen,
     expanded: &HashSet<Id>,
+    config: &Config,
 ) -> Vec<VisibleItem> {
     let svc = make_svc(store, clock, ids);
+    let today = clock.today();
     let roots = svc.roots().await;
     let mut items: Vec<VisibleItem> = Vec::new();
     let mut stack: Vec<(Id, usize)> = roots.into_iter().rev().map(|id| (id, 0)).collect();
@@ -123,6 +139,24 @@ async fn build_visible_items(
         let has_children = !children.is_empty();
         let is_expanded = expanded.contains(&id);
         let is_blocked = svc.is_blocked(&id).await;
+        let agg = svc.aggregate(&id).await.unwrap_or_default();
+
+        let projected = project_finish_date(
+            today,
+            agg.remaining,
+            config.hours_per_day,
+            config.days_per_week,
+        );
+        let eta = Some(match agg.earliest_due {
+            Some(due) => (due.max(projected), projected > due),
+            None => (projected, false),
+        });
+        let assignees = agg
+            .assignees
+            .iter()
+            .map(Id::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
 
         items.push(VisibleItem {
             id: id.clone(),
@@ -132,6 +166,13 @@ async fn build_visible_items(
             has_children,
             is_expanded,
             is_blocked,
+            done: agg.done,
+            total: agg.total,
+            due: agg.earliest_due,
+            eta,
+            assignees,
+            estimate: agg.estimate,
+            elapsed: agg.time_spent,
         });
 
         if is_expanded && has_children {
@@ -144,7 +185,7 @@ async fn build_visible_items(
 }
 
 impl AppState {
-    pub async fn new(store: TursoStore, keymap: Keymap) -> anyhow::Result<Self> {
+    pub async fn new(store: TursoStore, keymap: Keymap, config: Config) -> anyhow::Result<Self> {
         let mut app = Self {
             store,
             clock: SystemClock,
@@ -156,14 +197,21 @@ impl AppState {
             input: None,
             status_msg: None,
             keymap,
+            config,
         };
         app.rebuild().await;
         Ok(app)
     }
 
     pub async fn rebuild(&mut self) {
-        let new_items =
-            build_visible_items(&self.store, &self.clock, &self.ids, &self.expanded).await;
+        let new_items = build_visible_items(
+            &self.store,
+            &self.clock,
+            &self.ids,
+            &self.expanded,
+            &self.config,
+        )
+        .await;
         self.items = new_items;
         if self.cursor >= self.items.len() {
             self.cursor = self.items.len().saturating_sub(1);

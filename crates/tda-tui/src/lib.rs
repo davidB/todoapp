@@ -1,7 +1,9 @@
 //! tda TUI (spec §10 M4): open the Turso store, run the event loop. Called from tda-cli's `tui` subcommand.
 
 mod app;
+mod config;
 mod keymap;
+mod schedule;
 mod ui;
 
 use std::path::PathBuf;
@@ -10,6 +12,7 @@ use anyhow::Context as _;
 use tda_store_turso::TursoStore;
 
 use crate::app::AppState;
+use crate::config::Config;
 use crate::keymap::Keymap;
 
 fn db_path() -> PathBuf {
@@ -39,6 +42,22 @@ fn load_keymap() -> anyhow::Result<Keymap> {
     Keymap::load(user_toml.as_deref())
 }
 
+fn config_path() -> PathBuf {
+    std::env::var("TDA_CONFIG").map_or_else(
+        |_| {
+            dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("tda/config.toml")
+        },
+        PathBuf::from,
+    )
+}
+
+fn load_config() -> anyhow::Result<Config> {
+    let user_toml = std::fs::read_to_string(config_path()).ok();
+    Config::load(user_toml.as_deref())
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let path = db_path();
     if let Some(parent) = path.parent() {
@@ -47,8 +66,9 @@ pub async fn run() -> anyhow::Result<()> {
     let path_str = path.to_str().context("non-UTF-8 db path")?;
     let store = TursoStore::open(path_str).await.context("open database")?;
     let keymap = load_keymap().context("load keybindings")?;
+    let config = load_config().context("load config")?;
 
-    let mut app = AppState::new(store, keymap).await?;
+    let mut app = AppState::new(store, keymap, config).await?;
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app).await;
     ratatui::restore();

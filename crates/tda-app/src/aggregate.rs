@@ -1,8 +1,15 @@
 //! Per-capability subtree roll-ups (FR-13): walk `child` links from a task over
-//! itself + all descendants. Status → progress %, TimeSpent → sum, Estimate →
-//! sum, Schedule → earliest due (spec §13 Q3 default: progress = done/total).
+//! itself + all descendants. Status → progress % + done/total, TimeSpent →
+//! sum, Estimate → total sum + `remaining` (non-`Done` tasks only), Schedule →
+//! earliest due, Assignments → union of assignees (spec §13 Q3 default:
+//! progress = done/total).
 
-use tda_core::{ComponentStore, Estimate, Id, Schedule, Status, TaskEntityStore, TimeSpent};
+use std::collections::BTreeSet;
+
+use tda_core::{
+    Assignments, ComponentStore, Date, Duration, Estimate, Id, Schedule, Status, TaskEntityStore,
+    TimeSpent,
+};
 
 use crate::service::{Error, Services};
 
@@ -11,9 +18,13 @@ pub struct Aggregate {
     pub total: usize,
     pub done: usize,
     pub progress: f32,
-    pub time_spent_minutes: u32,
-    pub eta_minutes: u32,
-    pub earliest_due: Option<String>,
+    pub time_spent: Duration,
+    pub estimate: Duration,
+    /// `Estimate` summed over tasks whose `Status` is not `Done` — the TUI's
+    /// eta projection input (spec: no partial credit for `TimeSpent`).
+    pub remaining: Duration,
+    pub earliest_due: Option<Date>,
+    pub assignees: BTreeSet<Id>,
 }
 
 impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
@@ -26,16 +37,32 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         ids.insert(id.clone());
         for tid in ids {
             agg.total += 1;
-            if self.store.get::<Status>(&tid).await == Some(Status::Done) {
+            let status = self.store.get::<Status>(&tid).await;
+            if status == Some(Status::Done) {
                 agg.done += 1;
             }
-            agg.time_spent_minutes += self.store.get::<TimeSpent>(&tid).await.map_or(0, |t| t.0);
-            agg.eta_minutes += self.store.get::<Estimate>(&tid).await.map_or(0, |e| e.0);
+            agg.time_spent += self
+                .store
+                .get::<TimeSpent>(&tid)
+                .await
+                .map_or(Duration::ZERO, |t| t.0);
+            let estimate = self
+                .store
+                .get::<Estimate>(&tid)
+                .await
+                .map_or(Duration::ZERO, |e| e.0);
+            agg.estimate += estimate;
+            if status != Some(Status::Done) {
+                agg.remaining += estimate;
+            }
             if let Some(Schedule(due)) = self.store.get::<Schedule>(&tid).await {
                 agg.earliest_due = Some(match agg.earliest_due.take() {
                     Some(cur) if cur <= due => cur,
                     _ => due,
                 });
+            }
+            if let Some(Assignments(asg)) = self.store.get::<Assignments>(&tid).await {
+                agg.assignees.extend(asg.into_iter().map(|a| a.actor));
             }
         }
         agg.progress = if agg.total > 0 {
