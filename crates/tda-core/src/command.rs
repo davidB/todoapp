@@ -12,7 +12,7 @@ use crate::model::{
     Assignment, Assignments, Estimate, Id, Notes, Schedule, Status, Tags, TimeSpent, Title,
 };
 use crate::ports::ComponentStore;
-use crate::temporal::{Date, Duration};
+use crate::temporal::{Due, Duration};
 
 /// A refused command, with a human/agent-readable reason (spec §5a).
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
@@ -25,7 +25,7 @@ pub enum Command {
     SetTitle(String),
     SetNotes(Option<String>),
     SetStatus(Status),
-    SetSchedule(Option<Date>),
+    SetSchedule(Option<Due>),
     SetEstimate(Option<Duration>),
     AddTimeSpent(Duration),
     AddTag(String),
@@ -41,7 +41,7 @@ pub enum Event {
     TitleSet(String),
     NotesSet(Option<String>),
     StatusSet(Status),
-    ScheduleSet(Option<Date>),
+    ScheduleSet(Option<Due>),
     EstimateSet(Option<Duration>),
     TimeSpentAdded(Duration),
     TagAdded(String),

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Command, ComponentStore, Date, Duration, Id, Link, LinkKind, Position, Status, Tags,
+    Command, ComponentStore, Due, Duration, Id, Link, LinkKind, Position, Status, Tags,
     TaskEntityStore, Title,
 };
 
@@ -78,7 +78,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     pub async fn set_status(&self, id: &Id, status: Status) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetStatus(status)).await
     }
-    pub async fn set_due(&self, id: &Id, due: Option<Date>) -> Result<TaskSnapshot, Error> {
+    pub async fn set_due(&self, id: &Id, due: Option<Due>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetSchedule(due)).await
     }
     pub async fn set_estimate(

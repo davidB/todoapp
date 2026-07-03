@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Assignments, ComponentStore, Date, Duration, Estimate, Id, Schedule, Status, TaskEntityStore,
+    Assignments, ComponentStore, Due, Duration, Estimate, Id, Schedule, Status, TaskEntityStore,
     TimeSpent,
 };
 
@@ -23,7 +23,7 @@ pub struct Aggregate {
     /// `Estimate` summed over tasks whose `Status` is not `Done` — the TUI's
     /// eta projection input (spec: no partial credit for `TimeSpent`).
     pub remaining: Duration,
-    pub earliest_due: Option<Date>,
+    pub earliest_due: Option<Due>,
     pub assignees: BTreeSet<Id>,
 }
 

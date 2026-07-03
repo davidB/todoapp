@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use tda_app::{Anchor, Services, TaskSnapshot};
 use tda_core::{
-    Clock, Date, Dir, DueFilter, Filter, Id, IdGenerator, Query, SortField, SortKey, Status,
+    Clock, Date, Dir, Due, DueFilter, Filter, Id, IdGenerator, Query, SortField, SortKey, Status,
     Timestamp,
 };
 use tda_store_turso::TursoStore;
@@ -411,7 +411,11 @@ async fn main() -> anyhow::Result<()> {
                 let val = if d == "none" {
                     None
                 } else {
-                    Some(Date::parse(&d).context("parse --due as YYYY-MM-DD")?)
+                    Some(
+                        Due::parse(&d)
+                            .map_err(|e| anyhow::anyhow!(e))
+                            .context("parse --due as YYYY-MM-DD or \"YYYY-MM-DD HH:MM\"")?,
+                    )
                 };
                 task = svc.set_due(&id, val).await?;
             }

@@ -33,6 +33,9 @@ pub fn render(f: &mut Frame, app: &AppState) {
     if let Some((mode, text)) = &app.input {
         render_input_modal(f, area, mode, text);
     }
+    if let Some(form) = &app.edit_form {
+        render_edit_form(f, area, form);
+    }
     if matches!(app.view, View::Help) {
         render_help(f, area, &app.keymap);
     }
@@ -78,7 +81,8 @@ fn column_width(kind: ColumnKind) -> u16 {
 
 fn item_row(item: &VisibleItem, columns: &[ColumnKind], app: &AppState) -> Row<'static> {
     let tree_cell = Cell::from(tree_cell_text(item, app)).style(tree_status_style(item.status));
-    let cells = std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c)));
+    let cells =
+        std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c, app)));
     Row::new(cells)
 }
 
@@ -94,7 +98,7 @@ fn tree_cell_text(item: &VisibleItem, app: &AppState) -> String {
     format!("{indent}{arrow}{icon} {}{badge}", item.title)
 }
 
-fn render_column(item: &VisibleItem, kind: ColumnKind) -> Cell<'static> {
+fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'static> {
     match kind {
         ColumnKind::Status => Cell::from(progress_bar(item.done, item.total)),
         ColumnKind::Due => Cell::from(item.due.map_or("-".to_string(), |d| d.to_string())),
@@ -114,7 +118,11 @@ fn render_column(item: &VisibleItem, kind: ColumnKind) -> Cell<'static> {
         } else {
             item.assignees.clone()
         }),
-        ColumnKind::Estimate => Cell::from(item.estimate.to_string()),
+        ColumnKind::Estimate => Cell::from(crate::human_duration::format(
+            item.estimate,
+            app.config.hours_per_day,
+            app.config.days_per_week,
+        )),
         ColumnKind::Elapsed => Cell::from(item.elapsed.to_string()),
     }
 }
@@ -197,12 +205,39 @@ fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, text: &str) {
     let title = match mode {
         InputMode::AddChild(_) => " new child task ",
         InputMode::AddRoot => " new root task ",
-        InputMode::EditTitle(_) => " edit title ",
         InputMode::Search => " search ",
     };
     let popup = centered_rect(area, 60, 3);
     let p = Paragraph::new(format!("{text}▌"))
         .block(Block::default().borders(Borders::ALL).title(title));
+    f.render_widget(Clear, popup);
+    f.render_widget(p, popup);
+}
+
+/// The multi-field task edit dialog: one line per field, the focused field
+/// gets a cursor and a highlight style (Tab/Shift+Tab cycles focus).
+fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::app::TaskEditForm) {
+    use ratatui::text::Line;
+
+    let height = u16::try_from(crate::app::EDIT_FORM_LABELS.len() + 2).unwrap_or(u16::MAX);
+    let popup = centered_rect(area, 60, height);
+    let lines: Vec<Line> = crate::app::EDIT_FORM_LABELS
+        .iter()
+        .zip(&form.fields)
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let focused = i == form.focus;
+            let cursor = if focused { "▌" } else { "" };
+            let text = format!("{label}: {value}{cursor}");
+            if focused {
+                Line::styled(text, Style::default().add_modifier(Modifier::BOLD))
+            } else {
+                Line::raw(text)
+            }
+        })
+        .collect();
+    let p =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" edit task "));
     f.render_widget(Clear, popup);
     f.render_widget(p, popup);
 }
@@ -306,7 +341,7 @@ mod tests {
             .await
             .unwrap();
         // A due date far in the past guarantees the projected finish overruns it.
-        svc.set_due(&root.id, Some(Date::parse("2020-01-01").unwrap()))
+        svc.set_due(&root.id, Some(Date::parse("2020-01-01").unwrap().into()))
             .await
             .unwrap();
         svc.assign(&root.id, Id::new("alice")).await.unwrap();

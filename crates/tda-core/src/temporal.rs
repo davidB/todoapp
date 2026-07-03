@@ -54,6 +54,97 @@ impl fmt::Display for Date {
     }
 }
 
+/// A time-of-day (minute precision), for a due date's optional rendez-vous
+/// time. Naive/local, like the rest of the codebase — no zone is stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Time(pub jiff::civil::Time);
+
+impl Time {
+    /// Accepts `"HH:MM"` (24h).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        let (h, m) = s
+            .split_once(':')
+            .ok_or_else(|| format!("expected \"HH:MM\", got {s:?}"))?;
+        let h: i8 = h.parse().map_err(|_| format!("bad hour in {s:?}"))?;
+        let m: i8 = m.parse().map_err(|_| format!("bad minute in {s:?}"))?;
+        jiff::civil::Time::new(h, m, 0, 0)
+            .map(Time)
+            .map_err(|e| format!("bad time {s:?}: {e}"))
+    }
+}
+
+impl fmt::Display for Time {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02}:{:02}", self.0.hour(), self.0.minute())
+    }
+}
+
+impl Serialize for Time {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Time {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Time::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A due date with an optional time-of-day (spec: a "rendez-vous" due can
+/// carry a time; overdue/eta rollups (`Aggregate::earliest_due`,
+/// `project_finish_date`) stay day-granularity and only ever read `.date` —
+/// `.time` is display-only, never compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Due {
+    pub date: Date,
+    pub time: Option<Time>,
+}
+
+impl Due {
+    /// Accepts `"YYYY-MM-DD"` or `"YYYY-MM-DD HH:MM"` (space or `T` separated).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        let (date_part, time_part) = match s.split_once([' ', 'T']) {
+            Some((d, t)) => (d, Some(t)),
+            None => (s, None),
+        };
+        let date = Date::parse(date_part).map_err(|e| format!("bad date {date_part:?}: {e}"))?;
+        let time = time_part.map(Time::parse).transpose()?;
+        Ok(Due { date, time })
+    }
+}
+
+impl From<Date> for Due {
+    fn from(date: Date) -> Self {
+        Due { date, time: None }
+    }
+}
+
+impl fmt::Display for Due {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.time {
+            Some(t) => write!(f, "{} {t}", self.date),
+            None => write!(f, "{}", self.date),
+        }
+    }
+}
+
+impl Serialize for Due {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Due {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Due::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 /// An effort/elapsed duration (`Estimate`, `TimeSpent`), minute precision.
 /// Serializes as an integer number of minutes — the same shape the field had
 /// as a raw `u32`.
@@ -148,5 +239,33 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         assert_eq!(json, "\"2026-07-01\"");
         assert_eq!(serde_json::from_str::<Date>(&json).unwrap(), d);
+    }
+
+    #[test]
+    fn due_parses_date_only_and_date_time() {
+        let date_only = Due::parse("2026-07-01").unwrap();
+        assert_eq!(date_only.time, None);
+        assert_eq!(date_only.to_string(), "2026-07-01");
+
+        let with_time = Due::parse("2026-07-01 14:30").unwrap();
+        assert_eq!(with_time.date, date_only.date);
+        assert_eq!(with_time.to_string(), "2026-07-01 14:30");
+
+        // legacy plain-date rows (no time) still parse under the richer type.
+        assert_eq!(Due::parse("2026-07-01T14:30").unwrap(), with_time);
+    }
+
+    #[test]
+    fn due_json_roundtrips_and_orders_date_before_time() {
+        let with_time = Due::parse("2026-07-01 09:00").unwrap();
+        let json = serde_json::to_string(&with_time).unwrap();
+        assert_eq!(json, "\"2026-07-01 09:00\"");
+        assert_eq!(serde_json::from_str::<Due>(&json).unwrap(), with_time);
+
+        let date_only: Due = Date::parse("2026-07-01").unwrap().into();
+        assert!(
+            date_only < with_time,
+            "a bare due date sorts before a same-day rendez-vous time"
+        );
     }
 }

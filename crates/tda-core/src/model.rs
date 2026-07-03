@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::temporal::{Date, Duration};
+use crate::temporal::{Date, Due, Duration};
 
 /// Stable identity for tasks, actors, collections. Opaque string (a random ULID
 /// in real adapters; a sequence in tests). Serializes transparently as that
@@ -141,9 +141,9 @@ impl Component for Notes {
     const NAME: &'static str = "notes";
 }
 
-/// `Schedule` capability: a due date.
+/// `Schedule` capability: a due date, optionally with a time-of-day.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Schedule(pub Date);
+pub struct Schedule(pub Due);
 impl Component for Schedule {
     const NAME: &'static str = "schedule";
 }

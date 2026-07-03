@@ -10,8 +10,8 @@ use std::collections::{BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tda_core::{
-    Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, Date, DecideCtx,
-    Denied, Duration, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, QueryEngine,
+    Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, DecideCtx,
+    Denied, Due, Duration, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, QueryEngine,
     Schedule, Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title, apply, decide,
 };
 
@@ -35,7 +35,7 @@ pub struct TaskSnapshot {
     pub title: String,
     pub status: Status,
     pub notes: Option<String>,
-    pub due_date: Option<Date>,
+    pub due_date: Option<Due>,
     pub eta_minutes: Option<Duration>,
     pub time_spent_minutes: Duration,
     pub tags: BTreeSet<String>,

@@ -46,7 +46,7 @@ impl Action {
         ("jump_last", Action::JumpLast, "last item"),
         ("add_sibling", Action::AddSibling, "add sibling of cursor"),
         ("add_root", Action::AddRoot, "add root task"),
-        ("edit_title", Action::EditTitle, "edit title"),
+        ("edit_title", Action::EditTitle, "edit task"),
         (
             "cycle_status",
             Action::CycleStatus,

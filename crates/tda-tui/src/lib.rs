@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod human_duration;
 mod keymap;
 mod schedule;
 mod ui;

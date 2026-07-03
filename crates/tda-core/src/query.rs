@@ -90,7 +90,9 @@ where
         }
     }
     if let Some(due) = &f.due {
-        let date = store.get::<Schedule>(id).await.map(|s| s.0);
+        // Overdue/due-today etc. stay day-granularity (spec: a rendez-vous
+        // time is display-only, never compared) — only `.date` is read here.
+        let date = store.get::<Schedule>(id).await.map(|s| s.0.date);
         if !due_matches(date, due, today) {
             return false;
         }

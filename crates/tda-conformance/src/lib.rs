@@ -202,10 +202,10 @@ macro_rules! conformance_suite {
                 s.add_time_spent(&a.id, Duration::from_minutes(25))
                     .await
                     .unwrap();
-                s.set_due(&a.id, Some(Date::parse("2026-07-01").unwrap()))
+                s.set_due(&a.id, Some(Date::parse("2026-07-01").unwrap().into()))
                     .await
                     .unwrap();
-                s.set_due(&root.id, Some(Date::parse("2026-06-30").unwrap()))
+                s.set_due(&root.id, Some(Date::parse("2026-06-30").unwrap().into()))
                     .await
                     .unwrap();
                 s.set_estimate(&b.id, Some(Duration::from_minutes(20)))
@@ -219,7 +219,10 @@ macro_rules! conformance_suite {
                 // `a` is Done, so its 30m estimate is excluded from `remaining`.
                 assert_eq!(agg.remaining, Duration::from_minutes(20));
                 assert_eq!(agg.time_spent, Duration::from_minutes(25));
-                assert_eq!(agg.earliest_due, Some(Date::parse("2026-06-30").unwrap()));
+                assert_eq!(
+                    agg.earliest_due,
+                    Some(Date::parse("2026-06-30").unwrap().into())
+                );
                 assert_eq!(
                     agg.assignees,
                     std::collections::BTreeSet::from([Id::new("alice")])
@@ -284,10 +287,10 @@ macro_rules! conformance_suite {
                 let s = services!(store, clock, ids);
                 let today = s.create("today", None, Status::Todo, []).await.unwrap();
                 let past = s.create("past", None, Status::Todo, []).await.unwrap();
-                s.set_due(&today.id, Some(Date::parse("2026-06-22").unwrap()))
+                s.set_due(&today.id, Some(Date::parse("2026-06-22").unwrap().into()))
                     .await
                     .unwrap();
-                s.set_due(&past.id, Some(Date::parse("2026-01-01").unwrap()))
+                s.set_due(&past.id, Some(Date::parse("2026-01-01").unwrap().into()))
                     .await
                     .unwrap();
                 let due_today = s.due_today().await;

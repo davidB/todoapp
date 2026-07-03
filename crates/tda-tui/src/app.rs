@@ -5,11 +5,14 @@ use std::collections::HashSet;
 use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tda_app::{Anchor, QueryHit, Services};
-use tda_core::{Clock, Date, Duration, Filter, Id, IdGenerator, Query, Status, Timestamp};
+use tda_core::{
+    Assignment, Clock, Date, Due, Duration, Filter, Id, IdGenerator, Query, Status, Timestamp,
+};
 use tda_store_turso::TursoStore;
 use ulid::Ulid;
 
 use crate::config::Config;
+use crate::human_duration;
 use crate::keymap::{Action, Keymap};
 use crate::schedule::project_finish_date;
 
@@ -55,7 +58,7 @@ pub struct VisibleItem {
     pub is_blocked: bool,
     pub done: usize,
     pub total: usize,
-    pub due: Option<Date>,
+    pub due: Option<Due>,
     /// `(projected/effective eta date, true if it overruns `due`)`.
     pub eta: Option<(Date, bool)>,
     pub assignees: String,
@@ -74,8 +77,27 @@ pub enum View {
 pub enum InputMode {
     AddChild(Id),
     AddRoot,
-    EditTitle(Id),
     Search,
+}
+
+/// Field labels for `TaskEditForm`, in `fields` order.
+pub const EDIT_FORM_LABELS: [&str; 5] = [
+    "title",
+    "notes",
+    "due (YYYY-MM-DD[ HH:MM])",
+    "estimate (min)",
+    "assignee",
+];
+
+/// The multi-field task edit dialog (title/notes/due/estimate/assignee),
+/// opened by `Action::EditTitle`. Separate from `InputMode`/`input` since
+/// those are single-line; this carries one buffer per field plus which one
+/// is focused.
+#[derive(Clone)]
+pub struct TaskEditForm {
+    pub id: Id,
+    pub fields: [String; 5],
+    pub focus: usize,
 }
 
 // ---- AppState ---------------------------------------------------------------
@@ -91,6 +113,8 @@ pub struct AppState {
     pub view: View,
     /// Active input modal: (mode, typed text).
     pub input: Option<(InputMode, String)>,
+    /// Active task edit form (title/notes/due/estimate/assignee), if open.
+    pub edit_form: Option<TaskEditForm>,
     /// Transient one-line message shown in the status bar.
     pub status_msg: Option<String>,
     pub keymap: Keymap,
@@ -149,8 +173,10 @@ async fn build_visible_items(
             config.hours_per_day,
             config.days_per_week,
         );
+        // Overdue/eta stay day-granularity: a rendez-vous time-of-day is
+        // display-only (`VisibleItem.due`, below), never compared here.
         let eta = Some(match agg.earliest_due {
-            Some(due) => (due.max(projected), projected > due),
+            Some(due) => (due.date.max(projected), projected > due.date),
             None => (projected, false),
         });
         let assignees = agg
@@ -186,6 +212,29 @@ async fn build_visible_items(
     items
 }
 
+/// Diff a comma-separated actor-id field against a task's current
+/// `Assignment`s: `(to_assign, to_unassign)`.
+fn diff_assignees(current: &[Assignment], text: &str) -> (Vec<Id>, Vec<Id>) {
+    let wanted: Vec<Id> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(Id::new)
+        .collect();
+    let to_assign = wanted
+        .iter()
+        .filter(|id| !current.iter().any(|a| &a.actor == *id))
+        .cloned()
+        .collect();
+    let to_unassign = current
+        .iter()
+        .map(|a| &a.actor)
+        .filter(|actor| !wanted.contains(actor))
+        .cloned()
+        .collect();
+    (to_assign, to_unassign)
+}
+
 impl AppState {
     pub async fn new(store: TursoStore, keymap: Keymap, config: Config) -> anyhow::Result<Self> {
         let mut app = Self {
@@ -197,6 +246,7 @@ impl AppState {
             expanded: HashSet::new(),
             view: View::Tree,
             input: None,
+            edit_form: None,
             status_msg: None,
             keymap,
             config,
@@ -262,6 +312,9 @@ impl AppState {
         // Always quit on Ctrl+C.
         if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(false);
+        }
+        if self.edit_form.is_some() {
+            return self.handle_edit_form_key(code, modifiers).await;
         }
         if self.input.is_some() {
             return self.handle_input_key(code, modifiers).await;
@@ -361,12 +414,37 @@ impl AppState {
             Action::AddRoot if in_tree => {
                 self.input = Some((InputMode::AddRoot, String::new()));
             }
-            // Edit title (tree only)
+            // Edit task (title/notes/due/estimate/assignee) — tree only
             Action::EditTitle if in_tree => {
-                if let Some(item) = self.items.get(self.cursor) {
-                    let id = item.id.clone();
-                    let title = item.title.clone();
-                    self.input = Some((InputMode::EditTitle(id), title));
+                if let Some(id) = self.cursor_id() {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    if let Ok(snap) = svc.snapshot(&id).await {
+                        let assignee = snap
+                            .assignments
+                            .iter()
+                            .map(|a| a.actor.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.edit_form = Some(TaskEditForm {
+                            id,
+                            fields: [
+                                snap.title,
+                                snap.notes.unwrap_or_default(),
+                                snap.due_date.map(|d| d.to_string()).unwrap_or_default(),
+                                snap.eta_minutes
+                                    .map(|e| {
+                                        human_duration::format(
+                                            e,
+                                            self.config.hours_per_day,
+                                            self.config.days_per_week,
+                                        )
+                                    })
+                                    .unwrap_or_default(),
+                                assignee,
+                            ],
+                            focus: 0,
+                        });
+                    }
                 }
             }
             // Cycle status (tree only)
@@ -470,16 +548,6 @@ impl AppState {
                     self.cursor = pos;
                 }
             }
-            InputMode::EditTitle(id) => {
-                let result = {
-                    let svc = make_svc(&self.store, &self.clock, &self.ids);
-                    svc.set_title(&id, text).await
-                };
-                if let Err(e) = result {
-                    self.status_msg = Some(format!("edit: {e}"));
-                }
-                self.rebuild().await;
-            }
             InputMode::Search => {
                 let hits = {
                     let svc = make_svc(&self.store, &self.clock, &self.ids);
@@ -496,6 +564,114 @@ impl AppState {
                 self.cursor = 0;
             }
         }
+        Ok(())
+    }
+
+    async fn handle_edit_form_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> anyhow::Result<bool> {
+        match code {
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(form) = &mut self.edit_form {
+                    form.fields[form.focus].push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(form) = &mut self.edit_form {
+                    form.fields[form.focus].pop();
+                }
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                if let Some(form) = &mut self.edit_form {
+                    form.focus = (form.focus + 1) % form.fields.len();
+                }
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                if let Some(form) = &mut self.edit_form {
+                    form.focus = (form.focus + form.fields.len() - 1) % form.fields.len();
+                }
+            }
+            KeyCode::Esc => {
+                self.edit_form = None;
+            }
+            KeyCode::Enter => {
+                if let Some(form) = self.edit_form.take() {
+                    self.submit_edit_form(form).await?;
+                }
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    async fn submit_edit_form(&mut self, form: TaskEditForm) -> anyhow::Result<()> {
+        let [title, notes, due, estimate, assignee] = form.fields.clone();
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            self.status_msg = Some("edit: title required".to_string());
+            self.edit_form = Some(form);
+            return Ok(());
+        }
+        let due = due.trim();
+        let due = if due.is_empty() {
+            None
+        } else {
+            match Due::parse(due) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    self.status_msg = Some(format!("edit: due date: {e}"));
+                    self.edit_form = Some(form);
+                    return Ok(());
+                }
+            }
+        };
+        let estimate = estimate.trim();
+        let estimate = if estimate.is_empty() {
+            None
+        } else {
+            match human_duration::parse(
+                estimate,
+                self.config.hours_per_day,
+                self.config.days_per_week,
+            ) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    self.status_msg = Some(format!("edit: estimate: {e}"));
+                    self.edit_form = Some(form);
+                    return Ok(());
+                }
+            }
+        };
+
+        let svc = make_svc(&self.store, &self.clock, &self.ids);
+        let snap = svc.snapshot(&form.id).await;
+        let (to_assign, to_unassign) = match &snap {
+            Ok(snap) => diff_assignees(&snap.assignments, &assignee),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
+
+        let notes = notes.trim();
+        let result = svc
+            .set_title(&form.id, title)
+            .await
+            .and(
+                svc.set_notes(&form.id, (!notes.is_empty()).then(|| notes.to_string()))
+                    .await,
+            )
+            .and(svc.set_due(&form.id, due).await)
+            .and(svc.set_estimate(&form.id, estimate).await);
+        for actor in to_assign {
+            let _ = svc.assign(&form.id, actor).await;
+        }
+        for actor in to_unassign {
+            let _ = svc.unassign(&form.id, actor).await;
+        }
+        if let Err(e) = result {
+            self.status_msg = Some(format!("edit: {e}"));
+        }
+        self.rebuild().await;
         Ok(())
     }
 
@@ -627,5 +803,33 @@ impl AppState {
             Some(Err(e)) => self.status_msg = Some(format!("reparent: {e}")),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assignment(actor: &str) -> Assignment {
+        Assignment {
+            actor: Id::new(actor),
+            claimed: false,
+        }
+    }
+
+    #[test]
+    fn diff_assignees_adds_new_actor() {
+        let current = [assignment("me")];
+        let (assign, unassign) = diff_assignees(&current, "me, alice");
+        assert_eq!(assign, vec![Id::new("alice")]);
+        assert!(unassign.is_empty());
+    }
+
+    #[test]
+    fn diff_assignees_removes_dropped_actor() {
+        let current = [assignment("me"), assignment("alice")];
+        let (assign, unassign) = diff_assignees(&current, "me");
+        assert!(assign.is_empty());
+        assert_eq!(unassign, vec![Id::new("alice")]);
     }
 }

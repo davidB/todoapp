@@ -637,8 +637,11 @@ impl QueryEngine for TursoStore {
                 DueFilter::On(x) => ("=", x.to_string()),
                 DueFilter::After(x) => (">", x.to_string()),
             };
+            // `due_date` may now hold "YYYY-MM-DD" or "YYYY-MM-DD HH:MM" (a
+            // rendez-vous time is display-only) — compare the date prefix
+            // only, so overdue/due-today stay day-granularity regardless.
             clauses.push(format!(
-                "EXISTS (SELECT 1 FROM c_schedule WHERE task_id=t.id AND due_date {op} ?)"
+                "EXISTS (SELECT 1 FROM c_schedule WHERE task_id=t.id AND substr(due_date,1,10) {op} ?)"
             ));
             params.push(text(val));
         }
