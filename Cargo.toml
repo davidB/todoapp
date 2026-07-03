@@ -34,7 +34,7 @@ clap = { version = "4", features = ["derive"] }
 jiff = { version = "0.2", features = ["serde"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 dirs = "5"
-ratatui = "0.29"
+ratatui = "0.30"
 toml = "0.8"
 ulid = "1"
 

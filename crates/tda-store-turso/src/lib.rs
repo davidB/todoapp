@@ -17,7 +17,10 @@ use turso::Value;
 
 /// Schema migrations, applied in order; `PRAGMA user_version` tracks how many ran
 /// (spec §6: versioned from M2). Add the next migration as a new array element.
-const MIGRATIONS: &[&str] = &[include_str!("schema.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("schema.sql"),
+    include_str!("schema_002_paused_status.sql"),
+];
 
 pub struct TursoStore {
     conn: turso::Connection,
@@ -147,6 +150,7 @@ fn status_str(s: Status) -> &'static str {
         Status::Draft => "draft",
         Status::Todo => "todo",
         Status::Wip => "wip",
+        Status::Paused => "paused",
         Status::Done => "done",
     }
 }

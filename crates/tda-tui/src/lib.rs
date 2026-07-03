@@ -82,11 +82,25 @@ async fn run_loop(
     loop {
         terminal.draw(|f| ui::render(f, app))?;
         // spawn_blocking keeps the current_thread runtime unblocked while waiting
-        // for input; crossterm::event::read is a free fn so it's 'static + Send.
-        let event = tokio::task::spawn_blocking(crossterm::event::read)
-            .await
-            .context("event thread")??;
-        if !app.handle_event(event).await? {
+        // for input; poll-with-timeout (rather than a blocking read) lets the
+        // loop redraw periodically even without a keypress, animating the `wip`
+        // spinner. Timeout is the configured spinner interval.
+        let timeout = app.config.spinner_interval;
+        let event = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<Option<crossterm::event::Event>> {
+                if crossterm::event::poll(timeout)? {
+                    Ok(Some(crossterm::event::read()?))
+                } else {
+                    Ok(None)
+                }
+            },
+        )
+        .await
+        .context("event thread")??;
+        app.throbber_state.calc_next();
+        if let Some(event) = event
+            && !app.handle_event(event).await?
+        {
             break;
         }
     }

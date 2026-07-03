@@ -48,7 +48,7 @@ The same domain is reachable through a CLI, a TUI, an HTTP API, and (later) a GU
 |---|---|
 | **Task** | The atomic unit: a stable identity (id + timestamps) that **carries a set of capabilities** rather than a fixed field list. Required: `Title`, `Status`. Optional capabilities attach à la carte. |
 | **Capability** | A composable unit of data + behaviour attached to a task: `Status`, `Notes` (Markdown), `Schedule` (due date), `Estimate` (ETA), `TimeSpent`, `Tags`, `Assignment`. A capability may define **(a) data**, **(b) an aggregation** (how it rolls up a subtree), and **(c) guards** (which commands it allows/denies). Tasks differ by which capabilities they hold — composition, not an OOP god-struct. Adding a capability touches nothing existing. |
-| **Status** | A required capability. Values: `draft` → `todo` → `wip` → `done` (see [§8](#8-status-lifecycle)). Aggregates to subtree progress. `blocked` is **not** a stored value — it's derived from unmet `blocks` deps. |
+| **Status** | A required capability. Values: `draft`, `todo`, `wip`, `paused`, `done` (see [§8](#8-status-lifecycle)) — `[DECISION]` any value may be set to any other, freely, no transition guard. Aggregates to subtree progress. `blocked` is **not** a stored value — it's derived from unmet `blocks` deps. |
 | **Assignment** | An *optional* capability: 0–n assignees (`Person` or `Agent`). Its presence changes `Claim` semantics (see [§8](#8-status-lifecycle)): absent/empty ⇒ anyone may claim; present ⇒ only a listed assignee may claim. |
 | **Link** | A typed, *ordered* directed edge between two tasks. Types: `child` (structure) and `blocks` (dependency). The `child` graph is a **single-parent tree** (each task has exactly one structural home). The `blocks` graph is a **DAG**. |
 | **Tree view** | A curated structure rooted at a task (or a virtual root), following `child` links, with manual order. A hand-built "list" is just a shallow tree. |
@@ -82,7 +82,7 @@ Grouped and given IDs so the roadmap can reference them.
 - `FR-8` Move a task **or a whole subtree** to a new parent/position in one fast action.
 
 **Status & delegation**
-- `FR-9` Status lifecycle `draft → todo → wip → done` (see [§8](#8-status-lifecycle)); transitions enforced by the `Status` guard. `draft` is not claimable.
+- `FR-9` Status values `draft, todo, wip, paused, done` (see [§8](#8-status-lifecycle)); `[DECISION]` `SetStatus` accepts any value, no transition guard — a person may drop straight back from `wip` to `draft`, for instance. `draft` is not claimable.
 - `FR-10` 0–n assignees per task via the optional `Assignment` capability; assignee may be a Person or an Agent.
 - `FR-11` `Claim`: from `todo` only; open to anyone if no assignees, else assignee-only (per the `Assignment` capability).
 - `FR-12` A parent task supplies context (its title/notes/path) to an assignee working a child.
@@ -230,7 +230,7 @@ CREATE TABLE task (
 -- Capability components: 1:1 with task, row exists iff the task HAS the capability.
 CREATE TABLE c_title    ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, title TEXT NOT NULL );
 CREATE TABLE c_status   ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE,
-                          status TEXT NOT NULL CHECK (status IN ('draft','todo','wip','done')) );
+                          status TEXT NOT NULL CHECK (status IN ('draft','todo','wip','paused','done')) );
 CREATE TABLE c_notes    ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, notes TEXT NOT NULL ); -- Markdown, lazy-loaded
 CREATE TABLE c_schedule ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, due_date TEXT NOT NULL ); -- ISO-8601
 CREATE TABLE c_estimate ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, eta_minutes INTEGER NOT NULL );
@@ -279,7 +279,7 @@ A query is data, not code — stored in `collection.spec` (for saved ones) and e
 {
   "filter": {
     "text": "string?",                 // free-text over title/notes
-    "status": ["todo"],                // any-of: draft|todo|wip|done
+    "status": ["todo"],                // any-of: draft|todo|wip|paused|done
     "assignee": "actor_id?",
     "tag": ["tag"],                    // all-of (or any-of — see §13)
     "within": "task_id?",             // tasks in the subtree of this task
@@ -296,12 +296,15 @@ Built-ins ship as code-defined templates: `what-next` (`status:todo` sort `prior
 
 ## 8. Status lifecycle
 
-`Status` is a required capability with four stored values. `blocked` is **not** a value — it's derived from unmet `blocks` deps. Transitions are enforced by the `Status` guard ([§5a](#5a-commands-the-decider-pattern)).
+`Status` is a required capability with five stored values. `blocked` is **not** a value — it's derived from unmet `blocks` deps. `[DECISION]` `SetStatus` is **not** guarded by a transition rule — any value may be set to any other directly (no stepping through intermediate states). The diagram below shows the *common* path and its usual verbs, but none of them are mechanically enforced.
 
 ```
         promote                start (Claim)            complete
 draft ──────────▶ todo ───────────────────▶ wip ───────────────────▶ done
    ◀──── demote ───┘    ◀──────── release ───┘    ◀──────── reopen ────┘
+
+                    paused: a manual, off-path state a `wip` (or any) task can move
+                    to and back from freely — e.g. blocked on something external.
 
 derived:  blocked = ∃ a `blocks` dependency whose blocker is not `done`.
           Shown as a badge in any view; (optional guard) can deny `start` while blocked.
@@ -310,6 +313,7 @@ derived:  blocked = ∃ a `blocks` dependency whose blocker is not `done`.
 - `draft` — capturable, refinable, commentable; **not** offered as work (excluded from `what-next`).
 - `todo` — ready/claimable; appears in "what next" queues. *(synonym in prose: "ready".)*
 - `wip` — work in progress (claimed).
+- `paused` — manually set aside; not offered as work. No dedicated verb/aggregation — just another value in free rotation.
 - `done` — complete; rolls up into parent progress.
 
 **Claim rule (`FR-11`), driven by the `Assignment` capability** — *closes the earlier open question*:
@@ -333,7 +337,7 @@ tda ls [<id>] [--tree] [--query <name>] [--status todo]
 tda mv <id> --to <parent-id> [--before <id> | --after <id>]
 tda link <from> <to> --kind blocks
 tda assign <id> <actor>          tda claim <id> --as <actor>
-tda set <id> [--title ..] [--notes ..] [--status draft|todo|wip|done] [--due ..]
+tda set <id> [--title ..] [--notes ..] [--status draft|todo|wip|paused|done] [--due ..]
 tda tag <id> <tag>...
 
 # Search & queries (most "lists" live here)
@@ -419,7 +423,7 @@ These are *not* resolved by the decisions above — they need your input (Claude
 
 1. **Depth limit** (`FR-4`): your note said "no depth limit?". Suggest: unlimited, but a TUI render-depth cap for sanity. OK?
 2. **Denial aggregation in `decide`** ([§5a](#5a-commands-the-decider-pattern)): when several guards would deny a command, return the **first** denial (suggested — simplest, fastest) or **collect all** reasons (better UX for agents/forms)? Cheap to start with first-denial and switch later.
-3. **Aggregated status (`FR-13`)**: how does a parent's status derive from `{draft, todo, wip, done}` children — % `done` by count (suggested), ETA-weighted, plus an optional manual parent override?
+3. **Aggregated status (`FR-13`)**: how does a parent's status derive from `{draft, todo, wip, paused, done}` children — % `done` by count (suggested), ETA-weighted, plus an optional manual parent override?
 4. **`done` vs hidden**: do completed tasks stay in the tree (greyed) or move to an archive view? Suggest stay, with a filter.
 5. **API trust model** (`FR-20`/`§2`): local-only/no-auth for v1 (suggested), or a token from day one?
 6. **GUI framework** (`FR-22`): far off, but candidates are egui (Rust-native, pairs naturally with ratatui's immediate-mode feel) vs Tauri (web UI). No need to decide now.

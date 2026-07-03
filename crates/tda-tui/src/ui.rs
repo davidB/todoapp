@@ -49,7 +49,7 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
     let rows: Vec<Row> = app
         .items
         .iter()
-        .map(|item| item_row(item, columns))
+        .map(|item| item_row(item, columns, app))
         .collect();
 
     let mut widths = vec![Constraint::Fill(1)];
@@ -76,13 +76,13 @@ fn column_width(kind: ColumnKind) -> u16 {
     }
 }
 
-fn item_row(item: &VisibleItem, columns: &[ColumnKind]) -> Row<'static> {
-    let tree_cell = Cell::from(tree_cell_text(item)).style(tree_status_style(item.status));
+fn item_row(item: &VisibleItem, columns: &[ColumnKind], app: &AppState) -> Row<'static> {
+    let tree_cell = Cell::from(tree_cell_text(item, app)).style(tree_status_style(item.status));
     let cells = std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c)));
     Row::new(cells)
 }
 
-fn tree_cell_text(item: &VisibleItem) -> String {
+fn tree_cell_text(item: &VisibleItem, app: &AppState) -> String {
     let indent = "  ".repeat(item.depth);
     let arrow = if item.has_children {
         if item.is_expanded { "▼ " } else { "▶ " }
@@ -90,8 +90,8 @@ fn tree_cell_text(item: &VisibleItem) -> String {
         "· "
     };
     let badge = if item.is_blocked { " [!]" } else { "" };
-    let icon = status_icon(item.status);
-    format!("{indent}{arrow}[{icon}] {}{badge}", item.title)
+    let icon = status_icon(item.status, app);
+    format!("{indent}{arrow}{icon} {}{badge}", item.title)
 }
 
 fn render_column(item: &VisibleItem, kind: ColumnKind) -> Cell<'static> {
@@ -136,8 +136,8 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[tda_app::Query
             } else {
                 format!("[{}] ", hit.path.join(" › "))
             };
-            let icon = status_icon(hit.task.status);
-            let content = format!("{breadcrumb}[{icon}] {}", hit.task.title);
+            let icon = status_icon(hit.task.status, app);
+            let content = format!("{breadcrumb}{icon} {}", hit.task.title);
             ListItem::new(content).style(status_style(hit.task.status))
         })
         .collect();
@@ -230,12 +230,23 @@ fn centered_rect(area: Rect, pct_width: u16, height: u16) -> Rect {
     Rect::new(x, y, w, height.min(area.height))
 }
 
-fn status_icon(s: Status) -> char {
-    match s {
-        Status::Draft => '-',
-        Status::Todo => ' ',
-        Status::Wip => '~',
-        Status::Done => 'x',
+/// The configured glyph for a status; `wip` is always the animated spinner,
+/// driven by `app.throbber_state` (advanced once per redraw in the event loop).
+fn status_icon(s: Status, app: &AppState) -> String {
+    if s == Status::Wip {
+        let throbber =
+            throbber_widgets_tui::Throbber::default().throbber_set(app.config.throbber_set.clone());
+        throbber
+            .to_symbol_span(&app.throbber_state)
+            .content
+            .trim()
+            .to_string()
+    } else {
+        app.config
+            .status_glyphs
+            .get(&s)
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -243,7 +254,7 @@ fn status_icon(s: Status) -> char {
 fn tree_status_style(s: Status) -> Style {
     match s {
         Status::Done => Style::default().fg(Color::Gray),
-        Status::Draft | Status::Todo | Status::Wip => Style::default(),
+        Status::Draft | Status::Todo | Status::Wip | Status::Paused => Style::default(),
     }
 }
 
@@ -252,6 +263,7 @@ fn status_style(s: Status) -> Style {
         Status::Draft => Style::default().fg(Color::DarkGray),
         Status::Todo => Style::default(),
         Status::Wip => Style::default().fg(Color::Yellow),
+        Status::Paused => Style::default().fg(Color::Cyan),
         Status::Done => Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::DIM),

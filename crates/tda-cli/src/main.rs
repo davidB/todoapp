@@ -90,6 +90,7 @@ enum StatusArg {
     Draft,
     Todo,
     Wip,
+    Paused,
     Done,
 }
 
@@ -99,6 +100,7 @@ impl From<StatusArg> for Status {
             StatusArg::Draft => Status::Draft,
             StatusArg::Todo => Status::Todo,
             StatusArg::Wip => Status::Wip,
+            StatusArg::Paused => Status::Paused,
             StatusArg::Done => Status::Done,
         }
     }

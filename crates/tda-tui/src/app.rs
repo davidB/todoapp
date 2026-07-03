@@ -95,6 +95,8 @@ pub struct AppState {
     pub status_msg: Option<String>,
     pub keymap: Keymap,
     pub config: Config,
+    /// Animation state for the `wip` status spinner, advanced once per redraw.
+    pub throbber_state: throbber_widgets_tui::ThrobberState,
 }
 
 /// Build a `Services` bundle from individual field references so the borrow
@@ -198,6 +200,7 @@ impl AppState {
             status_msg: None,
             keymap,
             config,
+            throbber_state: throbber_widgets_tui::ThrobberState::default(),
         };
         app.rebuild().await;
         Ok(app)
@@ -476,11 +479,10 @@ impl AppState {
         let Some(item) = self.items.get(self.cursor).cloned() else {
             return Ok(());
         };
-        let new_status = match item.status {
-            Status::Draft => Status::Todo,
-            Status::Todo => Status::Wip,
-            Status::Wip => Status::Done,
-            Status::Done => Status::Draft,
+        let order = &self.config.status_order;
+        let new_status = match order.iter().position(|s| *s == item.status) {
+            Some(i) => order[(i + 1) % order.len()],
+            None => order[0],
         };
         let result = {
             let svc = make_svc(&self.store, &self.clock, &self.ids);

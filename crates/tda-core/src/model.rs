@@ -43,23 +43,27 @@ impl fmt::Display for Id {
 }
 
 /// Required `Status` capability (spec §8). `blocked` is *derived*, not stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Transitions between any two values are unrestricted (no guard) — `rank` is
+/// just for ordering/display, not a legality check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Draft,
     Todo,
     Wip,
+    Paused,
     Done,
 }
 
 impl Status {
-    /// Position in the `draft→todo→wip→done` chain; adjacency drives legal steps.
+    /// Position in the `draft→todo→wip→paused→done` chain, for ordering/display only.
     pub fn rank(self) -> i8 {
         match self {
             Status::Draft => 0,
             Status::Todo => 1,
             Status::Wip => 2,
-            Status::Done => 3,
+            Status::Paused => 3,
+            Status::Done => 4,
         }
     }
 }
@@ -70,6 +74,7 @@ impl fmt::Display for Status {
             Status::Draft => "draft",
             Status::Todo => "todo",
             Status::Wip => "wip",
+            Status::Paused => "paused",
             Status::Done => "done",
         };
         f.write_str(s)

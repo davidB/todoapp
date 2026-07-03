@@ -68,9 +68,6 @@ pub async fn decide<St: ComponentStore>(
     cmd: &Command,
     ctx: &DecideCtx,
 ) -> Result<Vec<Event>, Denied> {
-    if let Some(d) = g_status_transition(store, id, cmd).await {
-        return Err(d);
-    }
     if let Some(d) = g_blocked_start(cmd, ctx) {
         return Err(d);
     }
@@ -210,22 +207,6 @@ async fn assigned<St: ComponentStore>(store: &St, id: &Id, actor: &Id) -> bool {
 }
 
 // ---- guards ----------------------------------------------------------------
-
-/// `Status` capability: only single steps along `draft↔todo↔wip↔done` (a re-set
-/// to the same value is a no-op, allowed here and dropped by `events_for`).
-async fn g_status_transition<St: ComponentStore>(
-    store: &St,
-    id: &Id,
-    cmd: &Command,
-) -> Option<Denied> {
-    if let Command::SetStatus(to) = cmd
-        && let Some(cur) = store.get::<Status>(id).await
-        && (cur.rank() - to.rank()).abs() > 1
-    {
-        return Some(Denied(format!("illegal status transition {cur} -> {to}")));
-    }
-    None
-}
 
 /// `blocks` system: cannot start (`→wip`, via SetStatus or Claim) while blocked.
 fn g_blocked_start(cmd: &Command, ctx: &DecideCtx) -> Option<Denied> {

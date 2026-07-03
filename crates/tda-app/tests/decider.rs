@@ -17,19 +17,19 @@ async fn task(status: Status) -> (MemStore, Id) {
 }
 
 #[tokio::test]
-async fn status_steps_one_at_a_time() {
+async fn status_transitions_are_unrestricted() {
     let (store, id) = task(Status::Draft).await;
     let ctx = DecideCtx::default();
+    // jumping straight to `done`, and back down to `draft`, are both allowed.
     assert!(
-        decide(&store, &id, &Command::SetStatus(Status::Todo), &ctx)
+        decide(&store, &id, &Command::SetStatus(Status::Done), &ctx)
             .await
             .is_ok()
     );
-    // skipping a step is denied
     assert!(
-        decide(&store, &id, &Command::SetStatus(Status::Wip), &ctx)
+        decide(&store, &id, &Command::SetStatus(Status::Draft), &ctx)
             .await
-            .is_err()
+            .is_ok()
     );
 }
 
