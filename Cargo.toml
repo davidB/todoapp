@@ -31,7 +31,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 # TUI binary deps (tda-tui)
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-chrono = "0.4"
+jiff = { version = "0.2", features = ["serde"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 dirs = "5"
 ratatui = "0.29"

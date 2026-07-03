@@ -12,6 +12,7 @@ use crate::model::{
     Assignment, Assignments, Estimate, Id, Notes, Schedule, Status, Tags, TimeSpent, Title,
 };
 use crate::ports::ComponentStore;
+use crate::temporal::{Date, Duration};
 
 /// A refused command, with a human/agent-readable reason (spec §5a).
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
@@ -24,9 +25,9 @@ pub enum Command {
     SetTitle(String),
     SetNotes(Option<String>),
     SetStatus(Status),
-    SetSchedule(Option<String>),
-    SetEstimate(Option<u32>),
-    AddTimeSpent(u32),
+    SetSchedule(Option<Date>),
+    SetEstimate(Option<Duration>),
+    AddTimeSpent(Duration),
     AddTag(String),
     RemoveTag(String),
     Assign(Id),
@@ -40,9 +41,9 @@ pub enum Event {
     TitleSet(String),
     NotesSet(Option<String>),
     StatusSet(Status),
-    ScheduleSet(Option<String>),
-    EstimateSet(Option<u32>),
-    TimeSpentAdded(u32),
+    ScheduleSet(Option<Date>),
+    EstimateSet(Option<Duration>),
+    TimeSpentAdded(Duration),
     TagAdded(String),
     TagRemoved(String),
     Assigned(Id),
@@ -87,13 +88,16 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
         Event::NotesSet(Some(n)) => store.set(id, Notes(n.clone())).await,
         Event::NotesSet(None) => store.remove::<Notes>(id).await,
         Event::StatusSet(s) => store.set(id, *s).await,
-        Event::ScheduleSet(Some(d)) => store.set(id, Schedule(d.clone())).await,
+        Event::ScheduleSet(Some(d)) => store.set(id, Schedule(*d)).await,
         Event::ScheduleSet(None) => store.remove::<Schedule>(id).await,
         Event::EstimateSet(Some(e)) => store.set(id, Estimate(*e)).await,
         Event::EstimateSet(None) => store.remove::<Estimate>(id).await,
         Event::TimeSpentAdded(m) => {
-            let cur = store.get::<TimeSpent>(id).await.map_or(0, |t| t.0);
-            store.set(id, TimeSpent(cur + m)).await;
+            let cur = store
+                .get::<TimeSpent>(id)
+                .await
+                .map_or(Duration::ZERO, |t| t.0);
+            store.set(id, TimeSpent(cur + *m)).await;
         }
         Event::TagAdded(t) => {
             let mut tags = store.get::<Tags>(id).await.unwrap_or_default();
@@ -165,13 +169,13 @@ async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> V
         }
         Command::SetSchedule(d) => {
             let cur = store.get::<Schedule>(id).await.map(|x| x.0);
-            no_op_or(&cur == d, Event::ScheduleSet(d.clone()))
+            no_op_or(&cur == d, Event::ScheduleSet(*d))
         }
         Command::SetEstimate(e) => {
             let cur = store.get::<Estimate>(id).await.map(|x| x.0);
             no_op_or(&cur == e, Event::EstimateSet(*e))
         }
-        Command::AddTimeSpent(0) => vec![],
+        Command::AddTimeSpent(m) if *m == Duration::ZERO => vec![],
         Command::AddTimeSpent(m) => vec![Event::TimeSpentAdded(*m)],
         Command::AddTag(t) => {
             let has = store.get::<Tags>(id).await.is_some_and(|x| x.0.contains(t));

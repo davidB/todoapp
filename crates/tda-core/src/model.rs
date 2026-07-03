@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 
+use crate::temporal::{Date, Duration};
+
 /// Stable identity for tasks, actors, collections. Opaque string (a random ULID
 /// in real adapters; a sequence in tests). Serializes transparently as that
 /// string.
@@ -39,11 +41,6 @@ impl fmt::Display for Id {
         f.write_str(&self.0)
     }
 }
-
-/// Unix-epoch milliseconds, supplied by the [`crate::Clock`] port. Sortable;
-/// avoids pulling a date library into the core. Serializes as a bare integer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Timestamp(pub i64);
 
 /// Required `Status` capability (spec §8). `blocked` is *derived*, not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,24 +136,23 @@ impl Component for Notes {
     const NAME: &'static str = "notes";
 }
 
-/// `Schedule` capability: ISO-8601 date `YYYY-MM-DD`. Lexical order == date
-/// order, so `due:today`/`overdue` are plain string compares (no date crate).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Schedule(pub String);
+/// `Schedule` capability: a due date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Schedule(pub Date);
 impl Component for Schedule {
     const NAME: &'static str = "schedule";
 }
 
-/// `Estimate` capability (ETA minutes).
+/// `Estimate` capability (effort estimate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Estimate(pub u32);
+pub struct Estimate(pub Duration);
 impl Component for Estimate {
     const NAME: &'static str = "estimate";
 }
 
-/// `TimeSpent` capability (accumulated minutes).
+/// `TimeSpent` capability (accumulated time).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimeSpent(pub u32);
+pub struct TimeSpent(pub Duration);
 impl Component for TimeSpent {
     const NAME: &'static str = "timespent";
 }
@@ -254,9 +250,9 @@ pub struct Filter {
 pub enum DueFilter {
     Today,
     Overdue,
-    Before(String),
-    On(String),
-    After(String),
+    Before(Date),
+    On(Date),
+    After(Date),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

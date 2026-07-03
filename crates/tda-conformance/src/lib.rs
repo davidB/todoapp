@@ -8,7 +8,7 @@
 
 use std::cell::RefCell;
 
-use tda_core::{Clock, Id, IdGenerator, Timestamp};
+use tda_core::{Clock, Date, Id, IdGenerator, Timestamp};
 
 /// Sequential id generator: `t1`, `t2`, … Deterministic for tests.
 #[derive(Default)]
@@ -27,14 +27,14 @@ impl IdGenerator for SeqIds {
 /// Clock pinned to a fixed instant and date — deterministic for tests.
 pub struct FixedClock {
     pub now: Timestamp,
-    pub today: String,
+    pub today: Date,
 }
 
 impl Default for FixedClock {
     fn default() -> Self {
         Self {
-            now: Timestamp(0),
-            today: "2026-06-22".to_string(),
+            now: Timestamp::from_millisecond(0),
+            today: Date::parse("2026-06-22").unwrap(),
         }
     }
 }
@@ -43,8 +43,8 @@ impl Clock for FixedClock {
     fn now(&self) -> Timestamp {
         self.now
     }
-    fn today(&self) -> String {
-        self.today.clone()
+    fn today(&self) -> Date {
+        self.today
     }
 }
 
@@ -58,7 +58,9 @@ macro_rules! conformance_suite {
             #![allow(unused_imports)]
             use super::*;
             use ::tda_app::{Anchor, Services};
-            use ::tda_core::{Dir, DueFilter, Filter, Id, Query, SortField, SortKey, Status};
+            use ::tda_core::{
+                Date, Dir, DueFilter, Duration, Filter, Id, Query, SortField, SortKey, Status,
+            };
             use $crate::{FixedClock, SeqIds};
 
             /// Fresh store + fixtures, kept alive by the caller's locals.
@@ -194,18 +196,24 @@ macro_rules! conformance_suite {
                     .create("b", Some(&root.id), Status::Todo, [])
                     .await
                     .unwrap();
-                s.set_estimate(&a.id, Some(30)).await.unwrap();
-                s.add_time_spent(&a.id, 25).await.unwrap();
-                s.set_due(&a.id, Some("2026-07-01".into())).await.unwrap();
-                s.set_due(&root.id, Some("2026-06-30".into()))
+                s.set_estimate(&a.id, Some(Duration::from_minutes(30)))
+                    .await
+                    .unwrap();
+                s.add_time_spent(&a.id, Duration::from_minutes(25))
+                    .await
+                    .unwrap();
+                s.set_due(&a.id, Some(Date::parse("2026-07-01").unwrap()))
+                    .await
+                    .unwrap();
+                s.set_due(&root.id, Some(Date::parse("2026-06-30").unwrap()))
                     .await
                     .unwrap();
                 let agg = s.aggregate(&root.id).await.unwrap();
                 assert_eq!(agg.total, 3);
                 assert_eq!(agg.done, 1);
-                assert_eq!(agg.eta_minutes, 30);
-                assert_eq!(agg.time_spent_minutes, 25);
-                assert_eq!(agg.earliest_due.as_deref(), Some("2026-06-30"));
+                assert_eq!(agg.eta_minutes, Duration::from_minutes(30));
+                assert_eq!(agg.time_spent_minutes, Duration::from_minutes(25));
+                assert_eq!(agg.earliest_due, Some(Date::parse("2026-06-30").unwrap()));
             }
 
             #[tokio::test]
@@ -266,10 +274,10 @@ macro_rules! conformance_suite {
                 let s = services!(store, clock, ids);
                 let today = s.create("today", None, Status::Todo, []).await.unwrap();
                 let past = s.create("past", None, Status::Todo, []).await.unwrap();
-                s.set_due(&today.id, Some("2026-06-22".into()))
+                s.set_due(&today.id, Some(Date::parse("2026-06-22").unwrap()))
                     .await
                     .unwrap();
-                s.set_due(&past.id, Some("2026-01-01".into()))
+                s.set_due(&past.id, Some(Date::parse("2026-01-01").unwrap()))
                     .await
                     .unwrap();
                 let due_today = s.due_today().await;

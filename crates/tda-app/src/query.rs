@@ -25,7 +25,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         // store. `sort_by` is sync, so each hit carries its precomputed
         // tree-priority key for the comparator.
         let mut hits: Vec<(QueryHit, Vec<f64>)> = Vec::new();
-        for id in self.query.select(&q.filter, &today).await {
+        for id in self.query.select(&q.filter, today).await {
             let Ok(t) = self.snapshot(&id).await else {
                 continue;
             };

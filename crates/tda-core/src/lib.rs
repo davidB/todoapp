@@ -6,8 +6,10 @@ mod command;
 mod model;
 mod ports;
 mod query;
+mod temporal;
 
 pub use command::*;
 pub use model::*;
 pub use ports::*;
 pub use query::*;
+pub use temporal::*;

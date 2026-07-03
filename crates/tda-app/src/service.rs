@@ -10,9 +10,9 @@ use std::collections::{BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tda_core::{
-    Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, DecideCtx,
-    Denied, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, QueryEngine, Schedule,
-    Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title, apply, decide,
+    Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, Date, DecideCtx,
+    Denied, Duration, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, QueryEngine,
+    Schedule, Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title, apply, decide,
 };
 
 pub struct Services<'a, St> {
@@ -35,9 +35,9 @@ pub struct TaskSnapshot {
     pub title: String,
     pub status: Status,
     pub notes: Option<String>,
-    pub due_date: Option<String>,
-    pub eta_minutes: Option<u32>,
-    pub time_spent_minutes: u32,
+    pub due_date: Option<Date>,
+    pub eta_minutes: Option<Duration>,
+    pub time_spent_minutes: Duration,
     pub tags: BTreeSet<String>,
     pub assignments: Vec<Assignment>,
     pub created_at: Timestamp,
@@ -79,7 +79,11 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
             notes: self.store.get::<Notes>(id).await.map(|n| n.0),
             due_date: self.store.get::<Schedule>(id).await.map(|s| s.0),
             eta_minutes: self.store.get::<Estimate>(id).await.map(|e| e.0),
-            time_spent_minutes: self.store.get::<TimeSpent>(id).await.map_or(0, |t| t.0),
+            time_spent_minutes: self
+                .store
+                .get::<TimeSpent>(id)
+                .await
+                .map_or(Duration::ZERO, |t| t.0),
             tags: self
                 .store
                 .get::<Tags>(id)
@@ -106,13 +110,13 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         if let Some(n) = &t.notes {
             self.store.set(&t.id, Notes(n.clone())).await;
         }
-        if let Some(d) = &t.due_date {
-            self.store.set(&t.id, Schedule(d.clone())).await;
+        if let Some(d) = t.due_date {
+            self.store.set(&t.id, Schedule(d)).await;
         }
         if let Some(e) = t.eta_minutes {
             self.store.set(&t.id, Estimate(e)).await;
         }
-        if t.time_spent_minutes != 0 {
+        if t.time_spent_minutes != Duration::ZERO {
             self.store.set(&t.id, TimeSpent(t.time_spent_minutes)).await;
         }
         if !t.tags.is_empty() {

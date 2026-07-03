@@ -9,9 +9,9 @@
 
 use async_trait::async_trait;
 use tda_core::{
-    Collection, CollectionKind, CollectionRepository, Component, ComponentStore, DueFilter, Filter,
-    Id, Link, LinkKind, LinkRepository, Position, Query, QueryEngine, Status, TaskEntityStore,
-    Timestamp,
+    Collection, CollectionKind, CollectionRepository, Component, ComponentStore, Date, DueFilter,
+    Filter, Id, Link, LinkKind, LinkRepository, Position, Query, QueryEngine, Status,
+    TaskEntityStore, Timestamp,
 };
 use turso::Value;
 
@@ -357,7 +357,11 @@ impl TaskEntityStore for TursoStore {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO task(id,created_at,updated_at) VALUES (?,?,?)",
-                (id.0.clone(), created.0, updated.0),
+                (
+                    id.0.clone(),
+                    created.as_millisecond(),
+                    updated.as_millisecond(),
+                ),
             )
             .await
             .unwrap();
@@ -367,7 +371,7 @@ impl TaskEntityStore for TursoStore {
         self.conn
             .execute(
                 "UPDATE task SET updated_at=? WHERE id=?",
-                (updated.0, id.0.clone()),
+                (updated.as_millisecond(), id.0.clone()),
             )
             .await
             .unwrap();
@@ -384,8 +388,8 @@ impl TaskEntityStore for TursoStore {
             .unwrap();
         let row = rows.next().await.unwrap()?;
         Some((
-            Timestamp(as_int(row.get_value(0).unwrap())),
-            Timestamp(as_int(row.get_value(1).unwrap())),
+            Timestamp::from_millisecond(as_int(row.get_value(0).unwrap())),
+            Timestamp::from_millisecond(as_int(row.get_value(1).unwrap())),
         ))
     }
 
@@ -569,7 +573,7 @@ impl CollectionRepository for TursoStore {
 impl QueryEngine for TursoStore {
     /// The filter half of evaluation, pushed into a SQL `WHERE` (spec §7). Sort +
     /// breadcrumbs are the caller's (`tda-app`) job.
-    async fn select(&self, filter: &Filter, today: &str) -> Vec<Id> {
+    async fn select(&self, filter: &Filter, today: Date) -> Vec<Id> {
         let mut clauses: Vec<String> = Vec::new();
         let mut params: Vec<Value> = Vec::new();
 
@@ -625,9 +629,9 @@ impl QueryEngine for TursoStore {
             let (op, val) = match due {
                 DueFilter::Today => ("=", today.to_string()),
                 DueFilter::Overdue => ("<", today.to_string()),
-                DueFilter::Before(x) => ("<", x.clone()),
-                DueFilter::On(x) => ("=", x.clone()),
-                DueFilter::After(x) => (">", x.clone()),
+                DueFilter::Before(x) => ("<", x.to_string()),
+                DueFilter::On(x) => ("=", x.to_string()),
+                DueFilter::After(x) => (">", x.to_string()),
             };
             clauses.push(format!(
                 "EXISTS (SELECT 1 FROM c_schedule WHERE task_id=t.id AND due_date {op} ?)"

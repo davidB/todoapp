@@ -3,10 +3,9 @@
 use std::collections::HashSet;
 
 use anyhow::Context as _;
-use chrono::Local;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tda_app::{Anchor, QueryHit, Services};
-use tda_core::{Clock, Filter, Id, IdGenerator, Query, Status, Timestamp};
+use tda_core::{Clock, Date, Filter, Id, IdGenerator, Query, Status, Timestamp};
 use tda_store_turso::TursoStore;
 use ulid::Ulid;
 
@@ -23,10 +22,10 @@ impl Clock for SystemClock {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
         #[allow(clippy::cast_possible_truncation)]
-        Timestamp(ms as i64)
+        Timestamp::from_millisecond(ms as i64)
     }
-    fn today(&self) -> String {
-        Local::now().format("%Y-%m-%d").to_string()
+    fn today(&self) -> Date {
+        Date(jiff::Zoned::now().date())
     }
 }
 

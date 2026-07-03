@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Command, ComponentStore, Id, Link, LinkKind, Position, Status, Tags, TaskEntityStore, Title,
+    Command, ComponentStore, Date, Duration, Id, Link, LinkKind, Position, Status, Tags,
+    TaskEntityStore, Title,
 };
 
 use crate::service::{Error, Services, TaskSnapshot};
@@ -77,14 +78,18 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     pub async fn set_status(&self, id: &Id, status: Status) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetStatus(status)).await
     }
-    pub async fn set_due(&self, id: &Id, due: Option<String>) -> Result<TaskSnapshot, Error> {
+    pub async fn set_due(&self, id: &Id, due: Option<Date>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetSchedule(due)).await
     }
-    pub async fn set_estimate(&self, id: &Id, minutes: Option<u32>) -> Result<TaskSnapshot, Error> {
-        self.run(id, Command::SetEstimate(minutes)).await
+    pub async fn set_estimate(
+        &self,
+        id: &Id,
+        estimate: Option<Duration>,
+    ) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::SetEstimate(estimate)).await
     }
-    pub async fn add_time_spent(&self, id: &Id, minutes: u32) -> Result<TaskSnapshot, Error> {
-        self.run(id, Command::AddTimeSpent(minutes)).await
+    pub async fn add_time_spent(&self, id: &Id, spent: Duration) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::AddTimeSpent(spent)).await
     }
     pub async fn add_tag(&self, id: &Id, tag: impl Into<String>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::AddTag(tag.into())).await

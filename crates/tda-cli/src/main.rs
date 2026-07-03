@@ -4,12 +4,12 @@ use std::io::{self, Read as _, Write as _};
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use chrono::Local;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use tda_app::{Anchor, Services, TaskSnapshot};
 use tda_core::{
-    Clock, Dir, DueFilter, Filter, Id, IdGenerator, Query, SortField, SortKey, Status, Timestamp,
+    Clock, Date, Dir, DueFilter, Filter, Id, IdGenerator, Query, SortField, SortKey, Status,
+    Timestamp,
 };
 use tda_store_turso::TursoStore;
 use ulid::Ulid;
@@ -25,10 +25,10 @@ impl Clock for SystemClock {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_millis());
         #[allow(clippy::cast_possible_truncation)]
-        Timestamp(ms as i64)
+        Timestamp::from_millisecond(ms as i64)
     }
-    fn today(&self) -> String {
-        Local::now().format("%Y-%m-%d").to_string()
+    fn today(&self) -> Date {
+        Date(jiff::Zoned::now().date())
     }
 }
 
@@ -406,7 +406,11 @@ async fn main() -> anyhow::Result<()> {
                 task = svc.set_status(&id, s.into()).await?;
             }
             if let Some(d) = due {
-                let val = if d == "none" { None } else { Some(d) };
+                let val = if d == "none" {
+                    None
+                } else {
+                    Some(Date::parse(&d).context("parse --due as YYYY-MM-DD")?)
+                };
                 task = svc.set_due(&id, val).await?;
             }
             print_json(&task)?;

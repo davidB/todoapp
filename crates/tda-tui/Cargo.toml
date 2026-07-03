@@ -10,7 +10,7 @@ tda-core = { workspace = true }
 tda-app = { workspace = true }
 tda-store-turso = { workspace = true }
 anyhow = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 crossterm = { workspace = true }
 dirs = { workspace = true }
 ratatui = { workspace = true }

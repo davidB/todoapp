@@ -15,7 +15,7 @@ tda-app = { workspace = true }
 tda-store-turso = { workspace = true }
 tda-tui = { workspace = true }
 anyhow = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }

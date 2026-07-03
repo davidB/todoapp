@@ -11,10 +11,11 @@ use crate::model::{
     Assignments, DueFilter, Filter, Id, LinkKind, Notes, Schedule, Status, Tags, Title,
 };
 use crate::ports::{ComponentStore, LinkRepository, TaskEntityStore};
+use crate::temporal::Date;
 
 /// Task ids matching `filter` (unsorted). Loads only the components a given
 /// predicate needs, matching the in-app snapshot semantics exactly.
-pub async fn select_matching<St>(store: &St, filter: &Filter, today: &str) -> Vec<Id>
+pub async fn select_matching<St>(store: &St, filter: &Filter, today: Date) -> Vec<Id>
 where
     St: ComponentStore + TaskEntityStore + LinkRepository,
 {
@@ -34,7 +35,7 @@ where
 async fn matches<St>(
     store: &St,
     f: &Filter,
-    today: &str,
+    today: Date,
     within: Option<&HashSet<Id>>,
     id: &Id,
 ) -> bool
@@ -90,21 +91,21 @@ where
     }
     if let Some(due) = &f.due {
         let date = store.get::<Schedule>(id).await.map(|s| s.0);
-        if !due_matches(date.as_deref(), due, today) {
+        if !due_matches(date, due, today) {
             return false;
         }
     }
     true
 }
 
-fn due_matches(due: Option<&str>, filter: &DueFilter, today: &str) -> bool {
+fn due_matches(due: Option<Date>, filter: &DueFilter, today: Date) -> bool {
     let Some(d) = due else { return false };
     match filter {
         DueFilter::Today => d == today,
         DueFilter::Overdue => d < today,
-        DueFilter::Before(x) => d < x.as_str(),
-        DueFilter::On(x) => d == x.as_str(),
-        DueFilter::After(x) => d > x.as_str(),
+        DueFilter::Before(x) => d < *x,
+        DueFilter::On(x) => d == *x,
+        DueFilter::After(x) => d > *x,
     }
 }
 

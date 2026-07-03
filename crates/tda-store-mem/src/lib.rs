@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use tda_core::{
-    Collection, CollectionRepository, Component, ComponentStore, Filter, Id, Link, LinkKind,
+    Collection, CollectionRepository, Component, ComponentStore, Date, Filter, Id, Link, LinkKind,
     LinkRepository, QueryEngine, TaskEntityStore, Timestamp, select_matching,
 };
 
@@ -142,7 +142,7 @@ impl CollectionRepository for MemStore {
 #[async_trait(?Send)]
 impl QueryEngine for MemStore {
     /// No SQL to push to — reuse the core reference scan (spec §7).
-    async fn select(&self, filter: &Filter, today: &str) -> Vec<Id> {
+    async fn select(&self, filter: &Filter, today: Date) -> Vec<Id> {
         select_matching(self, filter, today).await
     }
 }

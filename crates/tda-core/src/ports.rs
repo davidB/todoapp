@@ -20,13 +20,14 @@
 
 use async_trait::async_trait;
 
-use crate::model::{Collection, Component, Filter, Id, Link, LinkKind, Timestamp};
+use crate::model::{Collection, Component, Filter, Id, Link, LinkKind};
+use crate::temporal::{Date, Timestamp};
 
 /// Injected time source — deterministic in tests.
 pub trait Clock {
     fn now(&self) -> Timestamp;
-    /// Today as ISO-8601 `YYYY-MM-DD`, for `due:today` / `overdue`.
-    fn today(&self) -> String;
+    /// Today's date, for `due:today` / `overdue`.
+    fn today(&self) -> Date;
 }
 
 /// Injected id source — deterministic in tests.
@@ -91,5 +92,5 @@ pub trait CollectionRepository {
 /// caller's job (`tda-app`), identical across stores.
 #[async_trait(?Send)]
 pub trait QueryEngine {
-    async fn select(&self, filter: &Filter, today: &str) -> Vec<Id>;
+    async fn select(&self, filter: &Filter, today: Date) -> Vec<Id>;
 }
