@@ -4,6 +4,7 @@
 //! `apply` → persist (task-local), or graph-validated structure ops.
 
 mod aggregate;
+mod import_sp;
 mod io;
 mod query;
 mod service;

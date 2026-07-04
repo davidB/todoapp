@@ -139,6 +139,11 @@ impl From<SortArg> for SortKey {
 enum FormatArg {
     Md,
     Json,
+    /// Super Productivity JSON backup — import-only, must be requested
+    /// explicitly (`--format sp`); auto-detection can't tell it apart from
+    /// tda's own `--format json` by extension alone.
+    #[value(alias = "superproductivity")]
+    Sp,
 }
 
 // ---- Clap structs -----------------------------------------------------------
@@ -538,6 +543,9 @@ async fn main() -> anyhow::Result<()> {
                     };
                     writeln!(io::stdout(), "{json}")?;
                 }
+                FormatArg::Sp => {
+                    anyhow::bail!("--format sp is import-only, not an export format")
+                }
             }
         }
 
@@ -559,6 +567,10 @@ async fn main() -> anyhow::Result<()> {
                 FormatArg::Json => {
                     svc.import_json(&text).await?;
                     print_json(&serde_json::json!({"ok": true}))?;
+                }
+                FormatArg::Sp => {
+                    let roots = svc.import_superproductivity(&text).await?;
+                    print_json(&roots)?;
                 }
             }
         }
