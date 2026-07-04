@@ -36,9 +36,9 @@ The same domain is reachable through a CLI, a TUI, an HTTP API, and (later) a GU
 **Non-goals (for v1)**
 - Real-time multi-user sync / CRDT collaboration. (Single-user, single-machine first.)
 - Mobile apps.
-- Rich text / attachments beyond plain notes (Markdown text only).
 - Account system / auth. (API is local/trusted first; see [§13](#13-open-questions).)
 - gRPC. **[DECISION]** Start HTTP+JSON only — universally consumable by agents and tooling; gRPC adds build/codegen cost with no v1 payoff. Revisit if streaming/perf demands it.
+- Rich text beyond plain Markdown notes. **[DECISION]** Attachments (link or actual file/image bytes) are, however, in scope — see `Attachments`/`BlobStore` in §3/§7. Superseded the earlier "no attachments" non-goal to support importing tasks (e.g. from Super Productivity) that carry file/image references.
 
 ---
 
@@ -47,9 +47,13 @@ The same domain is reachable through a CLI, a TUI, an HTTP API, and (later) a GU
 | Term | Meaning |
 |---|---|
 | **Task** | The atomic unit: a stable identity (id + timestamps) that **carries a set of capabilities** rather than a fixed field list. Required: `Title`, `Status`. Optional capabilities attach à la carte. |
-| **Capability** | A composable unit of data + behaviour attached to a task: `Status`, `Notes` (Markdown), `Schedule` (due date), `Estimate` (ETA), `TimeSpent`, `Tags`, `Assignment`. A capability may define **(a) data**, **(b) an aggregation** (how it rolls up a subtree), and **(c) guards** (which commands it allows/denies). Tasks differ by which capabilities they hold — composition, not an OOP god-struct. Adding a capability touches nothing existing. |
+| **Capability** | A composable unit of data + behaviour attached to a task: `Status`, `Notes` (Markdown), `Schedule` (due date, optionally with time-of-day), `Estimate` (ETA), `TimeSpent`, `TimeLog` (per-day breakdown), `Tags`, `Assignment`, `Recurrence`, `IssueRef`, `Attachments`, `Archived`. A capability may define **(a) data**, **(b) an aggregation** (how it rolls up a subtree), and **(c) guards** (which commands it allows/denies). Tasks differ by which capabilities they hold — composition, not an OOP god-struct. Adding a capability touches nothing existing. |
 | **Status** | A required capability. Values: `draft`, `todo`, `wip`, `paused`, `done` (see [§8](#8-status-lifecycle)) — `[DECISION]` any value may be set to any other, freely, no transition guard. Aggregates to subtree progress. `blocked` is **not** a stored value — it's derived from unmet `blocks` deps. |
 | **Assignment** | An *optional* capability: 0–n assignees (`Person` or `Agent`). Its presence changes `Claim` semantics (see [§8](#8-status-lifecycle)): absent/empty ⇒ anyone may claim; present ⇒ only a listed assignee may claim. |
+| **Recurrence** | An *optional* capability: a repeat rule (`daily`/`weekly`-by-weekday/`monthly`). **[DECISION]** No per-occurrence task spawning — a recurring task **resets in place**: completing it (`SetStatus(done)`) recomputes its `Schedule` from the rule and its own current due date, and flips `Status` back to `todo`, instead of staying `done`. A task with no `Schedule` can't meaningfully recur, so it just completes normally. |
+| **IssueRef** | An *optional* capability: a static `{provider, id, url}` reference to an external issue tracker (e.g. a GitHub/Jira issue) — no live sync, no computed URL. Mainly populated by imports. |
+| **Attachments** | An *optional* capability: a list of `{id, kind (link/file/image), title, url, blob, mime}`. `link` never has a `blob`; `file`/`image` may reference actual bytes stored via the `BlobStore` port (content-addressed) or just carry a source `url`/path when bytes aren't available (e.g. an import that only has metadata). |
+| **Archived** | An *optional*, presence-only capability, **orthogonal to `Status`** (a task can be `done` and archived, or archived without being `done`) — resolves [§13](#13-open-questions) Q4: archived tasks stay in the store (not moved to a separate structure) and are hidden from default views (`what-next`, `due-today`) by those views passing `archived:false`; `Filter.archived` itself stays neutral (`None` = no restriction). |
 | **Link** | A typed, *ordered* directed edge between two tasks. Types: `child` (structure) and `blocks` (dependency). The `child` graph is a **single-parent tree** (each task has exactly one structural home). The `blocks` graph is a **DAG**. |
 | **Tree view** | A curated structure rooted at a task (or a virtual root), following `child` links, with manual order. A hand-built "list" is just a shallow tree. |
 | **Query view** | A *derived* list: its members are the result of a **filter + sort**, not stored membership. This is what "list" usually means here (e.g. "what next", "due today"). A task appears in any number of query views for free. |
@@ -99,6 +103,13 @@ Grouped and given IDs so the roadmap can reference them.
 
 **Architecture-level**
 - `FR-26` All mutations are `Command`s passed through capability/system **guards** (allow/deny with reason) before being applied ([§5a](#5a-commands-the-decider-pattern)).
+
+**Extended capabilities** (added to support importing tasks from other tools, e.g. Super Productivity)
+- `FR-27` `Recurrence` capability: completing a recurring task recomputes its `Schedule` from the rule and resets `Status` to `todo`, instead of staying `done` — no per-occurrence task spawning.
+- `FR-28` `IssueRef` capability: a static external issue-tracker reference (`provider`/`id`/`url`) on a task, for context — no live sync.
+- `FR-29` `Attachments` capability + `BlobStore` port: link or file/image attachments, with actual bytes stored content-addressed when available.
+- `FR-30` `Archived` capability: orthogonal to `Status`; hidden from default views via a filter, not a separate structure (resolves [§13](#13-open-questions) Q4).
+- `FR-31` `TimeLog` capability: per-day time-spent breakdown; `TimeSpent` (`FR-13`'s aggregate) is recomputed as its sum whenever set.
 
 **I/O**
 - `FR-16` Export any list or branch to Markdown task list and to JSON.
@@ -150,6 +161,7 @@ tda/
 - `QueryEngine` — evaluate a `Query` (filter + sort) over the store; returns task refs with their breadcrumb paths. Pure given a store snapshot, so it's directly unit-testable.
 - `Clock` — injected time source (deterministic tests).
 - `IdGenerator` — injected IDs (deterministic tests).
+- `BlobStore` — content-addressed byte storage for `Attachment` file/image content (`FR-29`); separate from `ComponentStore` since blobs aren't a per-task-capability row.
 
 Use cases (in `tda-app`) are the only callers of ports. Adapters never call each other.
 
@@ -241,6 +253,23 @@ CREATE TABLE c_tag        ( task_id TEXT NOT NULL REFERENCES task(id) ON DELETE 
 CREATE INDEX tag_by_name ON c_tag(tag);
 CREATE TABLE c_assignment ( task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, actor_id TEXT NOT NULL,
                             claimed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (task_id, actor_id) );
+CREATE TABLE c_timelog ( task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, day TEXT NOT NULL,
+                         minutes INTEGER NOT NULL, PRIMARY KEY (task_id, day) ); -- per-day breakdown; c_timespent stays the cached sum
+CREATE TABLE c_attachment ( task_id TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE, attachment_id TEXT NOT NULL,
+                            kind TEXT NOT NULL CHECK (kind IN ('link','file','image')), title TEXT NOT NULL,
+                            url TEXT, blob_id TEXT REFERENCES blob(id), mime TEXT,
+                            PRIMARY KEY (task_id, attachment_id) );
+
+-- Nested/structured capability components: one JSON-serialized column each,
+-- rather than one column per variant field.
+CREATE TABLE c_recurrence ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, data TEXT NOT NULL );
+CREATE TABLE c_issueref   ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE, data TEXT NOT NULL );
+
+-- Presence-only capability component: no data column, the row IS the flag.
+CREATE TABLE c_archived ( task_id TEXT PRIMARY KEY REFERENCES task(id) ON DELETE CASCADE );
+
+-- Blob storage (`BlobStore` port): content-addressed, referenced by c_attachment.blob_id.
+CREATE TABLE blob ( id TEXT PRIMARY KEY, content BLOB NOT NULL, created_at INTEGER NOT NULL );
 
 -- Typed, ORDERED edges. `blocks` is many-to-many (DAG).
 -- `child` is single-parent (tree): the `one_parent` index enforces ≤1 incoming `child` link per to_id.
@@ -424,7 +453,7 @@ These are *not* resolved by the decisions above — they need your input (Claude
 1. **Depth limit** (`FR-4`): your note said "no depth limit?". Suggest: unlimited, but a TUI render-depth cap for sanity. OK?
 2. **Denial aggregation in `decide`** ([§5a](#5a-commands-the-decider-pattern)): when several guards would deny a command, return the **first** denial (suggested — simplest, fastest) or **collect all** reasons (better UX for agents/forms)? Cheap to start with first-denial and switch later.
 3. **Aggregated status (`FR-13`)**: how does a parent's status derive from `{draft, todo, wip, paused, done}` children — % `done` by count (suggested), ETA-weighted, plus an optional manual parent override?
-4. **`done` vs hidden**: do completed tasks stay in the tree (greyed) or move to an archive view? Suggest stay, with a filter.
+4. ~~**`done` vs hidden**: do completed tasks stay in the tree (greyed) or move to an archive view? Suggest stay, with a filter.~~ **Resolved:** the orthogonal `Archived` capability ([§3](#3-core-concepts-glossary)/[§7](#7-data-model-turso-adapter)) — tasks stay in the store and tree, hidden from default views (`what-next`, `due-today`) via a filter, not moved to a separate structure.
 5. **API trust model** (`FR-20`/`§2`): local-only/no-auth for v1 (suggested), or a token from day one?
 6. **GUI framework** (`FR-22`): far off, but candidates are egui (Rust-native, pairs naturally with ratatui's immediate-mode feel) vs Tauri (web UI). No need to decide now.
 7. **Batch-create syntax** (`FR-1`): indentation = depth in the batch buffer (suggested), or flat-only with manual nesting after?
