@@ -6,8 +6,9 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Assignment, Assignments, Command, ComponentStore, DecideCtx, Denied, Due, Id, IssueRef,
-    Recurrence, RepeatCycle, Schedule, Status, Weekday, apply, decide,
+    Assignment, Assignments, Command, ComponentStore, Date, DecideCtx, Denied, Due, Duration, Id,
+    IssueRef, Recurrence, RepeatCycle, Schedule, Status, TimeLog, TimeSpent, Weekday, apply,
+    decide,
 };
 use tda_store_mem::MemStore;
 
@@ -193,4 +194,46 @@ async fn issue_ref_set_and_cleared() {
         apply(&store, &id, e).await;
     }
     assert_eq!(store.get::<IssueRef>(&id).await, None);
+}
+
+#[tokio::test]
+async fn time_log_recomputes_cumulative_time_spent() {
+    let (store, id) = task(Status::Todo).await;
+    let ctx = DecideCtx::default();
+    let map = std::collections::BTreeMap::from([
+        (
+            Date::parse("2026-07-01").unwrap(),
+            Duration::from_minutes(30),
+        ),
+        (
+            Date::parse("2026-07-02").unwrap(),
+            Duration::from_minutes(45),
+        ),
+    ]);
+    let ev = decide(&store, &id, &Command::SetTimeLog(map.clone()), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert_eq!(store.get::<TimeLog>(&id).await.map(|t| t.0), Some(map));
+    assert_eq!(
+        store.get::<TimeSpent>(&id).await.map(|t| t.0),
+        Some(Duration::from_minutes(75))
+    );
+
+    // clearing the log also clears the derived total
+    let ev = decide(
+        &store,
+        &id,
+        &Command::SetTimeLog(std::collections::BTreeMap::new()),
+        &ctx,
+    )
+    .await
+    .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert_eq!(store.get::<TimeLog>(&id).await, None);
+    assert_eq!(store.get::<TimeSpent>(&id).await, None);
 }

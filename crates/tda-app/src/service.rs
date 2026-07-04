@@ -6,14 +6,14 @@
 //! object-safe, so it can't be a `&dyn`). The graph/collection/clock/id ports
 //! stay `&dyn` — they have no generic methods.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tda_core::{
-    Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, DecideCtx,
+    Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, Date, DecideCtx,
     Denied, Due, Duration, Estimate, Id, IdGenerator, IssueRef, LinkKind, LinkRepository, Notes,
-    QueryEngine, Recurrence, Schedule, Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title,
-    apply, decide,
+    QueryEngine, Recurrence, Schedule, Status, Tags, TaskEntityStore, TimeLog, TimeSpent,
+    Timestamp, Title, apply, decide,
 };
 
 pub struct Services<'a, St> {
@@ -43,6 +43,7 @@ pub struct TaskSnapshot {
     pub assignments: Vec<Assignment>,
     pub recurrence: Option<Recurrence>,
     pub issue_ref: Option<IssueRef>,
+    pub time_log: BTreeMap<Date, Duration>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -126,6 +127,12 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .unwrap_or_default(),
             recurrence: self.store.get::<Recurrence>(id).await,
             issue_ref: self.store.get::<IssueRef>(id).await,
+            time_log: self
+                .store
+                .get::<TimeLog>(id)
+                .await
+                .map(|t| t.0)
+                .unwrap_or_default(),
             created_at,
             updated_at,
         })
@@ -162,6 +169,9 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         }
         if let Some(r) = &t.issue_ref {
             self.store.set(&t.id, r.clone()).await;
+        }
+        if !t.time_log.is_empty() {
+            self.store.set(&t.id, TimeLog(t.time_log.clone())).await;
         }
     }
 

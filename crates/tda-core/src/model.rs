@@ -8,7 +8,7 @@
 
 use jiff::ToSpan;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::temporal::{Date, Due, Duration, Time};
@@ -161,6 +161,18 @@ impl Component for Estimate {
 pub struct TimeSpent(pub Duration);
 impl Component for TimeSpent {
     const NAME: &'static str = "timespent";
+}
+
+/// `TimeLog` capability: a per-day breakdown of time spent, keyed by calendar
+/// date. `TimeSpent` stays the fast-path cumulative total — it's recomputed
+/// as this map's sum whenever it's set (see the `Event::TimeLogSet` apply
+/// arm), so aggregation (FR-13) keeps reading `TimeSpent` unchanged. Mixing
+/// this with the plain `AddTimeSpent` command (no date) can leave the two
+/// slightly inconsistent — a known, accepted edge case, not guarded against.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeLog(pub BTreeMap<Date, Duration>);
+impl Component for TimeLog {
+    const NAME: &'static str = "timelog";
 }
 
 /// `Tags` capability: the whole set is one component value (empty ⇒ remove it).

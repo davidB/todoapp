@@ -8,12 +8,14 @@
 //! (move, link) need the graph and so are validated in `tda-app` — that's where
 //! the tree/DAG live. Both still flow through guard-style checks (FR-26).
 
+use std::collections::BTreeMap;
+
 use crate::model::{
     Assignment, Assignments, Estimate, Id, IssueRef, Notes, Recurrence, Schedule, Status, Tags,
-    TimeSpent, Title,
+    TimeLog, TimeSpent, Title,
 };
 use crate::ports::ComponentStore;
-use crate::temporal::{Due, Duration};
+use crate::temporal::{Date, Due, Duration};
 
 /// A refused command, with a human/agent-readable reason (spec §5a).
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::Display, derive_more::Error)]
@@ -36,6 +38,7 @@ pub enum Command {
     Claim(Id),
     SetRecurrence(Option<Recurrence>),
     SetIssueRef(Option<IssueRef>),
+    SetTimeLog(BTreeMap<Date, Duration>),
 }
 
 /// The decided result of a command, folded by [`apply`].
@@ -55,6 +58,7 @@ pub enum Event {
     Claimed(Id),
     RecurrenceSet(Option<Recurrence>),
     IssueRefSet(Option<IssueRef>),
+    TimeLogSet(BTreeMap<Date, Duration>),
 }
 
 /// Facts a guard needs beyond the task itself. Just the derived `blocked` flag
@@ -155,6 +159,16 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
         Event::RecurrenceSet(None) => store.remove::<Recurrence>(id).await,
         Event::IssueRefSet(Some(r)) => store.set(id, r.clone()).await,
         Event::IssueRefSet(None) => store.remove::<IssueRef>(id).await,
+        Event::TimeLogSet(m) => {
+            if m.is_empty() {
+                store.remove::<TimeLog>(id).await;
+                store.remove::<TimeSpent>(id).await;
+            } else {
+                let total: Duration = m.values().copied().sum();
+                store.set(id, TimeLog(m.clone())).await;
+                store.set(id, TimeSpent(total)).await;
+            }
+        }
     }
 }
 
@@ -222,6 +236,10 @@ async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> V
         Command::SetIssueRef(r) => {
             let cur = store.get::<IssueRef>(id).await;
             no_op_or(&cur == r, Event::IssueRefSet(r.clone()))
+        }
+        Command::SetTimeLog(m) => {
+            let cur = store.get::<TimeLog>(id).await.unwrap_or_default();
+            no_op_or(&cur.0 == m, Event::TimeLogSet(m.clone()))
         }
     }
 }

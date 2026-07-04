@@ -1,10 +1,10 @@
 //! Capture, edit, structure, and delegation use cases (FR-1..FR-12).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use tda_core::{
-    Command, ComponentStore, Due, Duration, Id, IssueRef, Link, LinkKind, Position, Recurrence,
-    Status, Tags, TaskEntityStore, Title,
+    Command, ComponentStore, Date, Due, Duration, Id, IssueRef, Link, LinkKind, Position,
+    Recurrence, Status, Tags, TaskEntityStore, Title,
 };
 
 use crate::service::{Error, Services, TaskSnapshot};
@@ -122,6 +122,13 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         issue_ref: Option<IssueRef>,
     ) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetIssueRef(issue_ref)).await
+    }
+    pub async fn set_time_log(
+        &self,
+        id: &Id,
+        time_log: BTreeMap<Date, Duration>,
+    ) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::SetTimeLog(time_log)).await
     }
 
     // ---- structure (FR-4..FR-8): graph-aware, validated here, not in decide -

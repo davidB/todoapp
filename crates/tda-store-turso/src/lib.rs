@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema_002_paused_status.sql"),
     include_str!("schema_003_recurrence.sql"),
     include_str!("schema_004_issueref.sql"),
+    include_str!("schema_005_timelog.sql"),
 ];
 
 pub struct TursoStore {
@@ -131,6 +132,7 @@ fn ctable(name: &str) -> &'static str {
         "assignments" => "c_assignment",
         "recurrence" => "c_recurrence",
         "issueref" => "c_issueref",
+        "timelog" => "c_timelog",
         _ => unreachable!("unknown component {name}"),
     }
 }
@@ -296,6 +298,26 @@ impl ComponentStore for TursoStore {
                 }
                 serde_json::Value::Array(tags)
             }
+            "timelog" => {
+                let mut rows = self
+                    .conn
+                    .query(
+                        "SELECT day, minutes FROM c_timelog WHERE task_id=? ORDER BY day",
+                        (tid.to_string(),),
+                    )
+                    .await
+                    .unwrap();
+                let mut map = serde_json::Map::new();
+                while let Some(r) = rows.next().await.unwrap() {
+                    let day = as_text(r.get_value(0).unwrap());
+                    let minutes = as_int(r.get_value(1).unwrap());
+                    map.insert(day, serde_json::Value::Number(minutes.into()));
+                }
+                if map.is_empty() {
+                    return None;
+                }
+                serde_json::Value::Object(map)
+            }
             "assignments" => {
                 let mut rows = self
                     .conn
@@ -353,6 +375,24 @@ impl ComponentStore for TursoStore {
                                 .await
                                 .unwrap();
                         }
+                    }
+                }
+            }
+            "timelog" => {
+                self.conn
+                    .execute("DELETE FROM c_timelog WHERE task_id=?", (tid.clone(),))
+                    .await
+                    .unwrap();
+                if let serde_json::Value::Object(map) = v {
+                    for (day, minutes) in map {
+                        let m = minutes.as_i64().unwrap_or(0);
+                        self.conn
+                            .execute(
+                                "INSERT OR REPLACE INTO c_timelog(task_id,day,minutes) VALUES (?,?,?)",
+                                (tid.clone(), day, m),
+                            )
+                            .await
+                            .unwrap();
                     }
                 }
             }
@@ -444,6 +484,7 @@ impl TaskEntityStore for TursoStore {
             "c_assignment",
             "c_recurrence",
             "c_issueref",
+            "c_timelog",
         ] {
             self.conn
                 .execute(&format!("DELETE FROM {t} WHERE task_id=?"), (tid.clone(),))
