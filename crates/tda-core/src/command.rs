@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 
 use crate::model::{
-    Assignment, Assignments, Estimate, Id, IssueRef, Notes, Recurrence, Schedule, Status, Tags,
-    TimeLog, TimeSpent, Title,
+    Archived, Assignment, Assignments, Estimate, Id, IssueRef, Notes, Recurrence, Schedule, Status,
+    Tags, TimeLog, TimeSpent, Title,
 };
 use crate::ports::ComponentStore;
 use crate::temporal::{Date, Due, Duration};
@@ -39,6 +39,7 @@ pub enum Command {
     SetRecurrence(Option<Recurrence>),
     SetIssueRef(Option<IssueRef>),
     SetTimeLog(BTreeMap<Date, Duration>),
+    SetArchived(bool),
 }
 
 /// The decided result of a command, folded by [`apply`].
@@ -59,6 +60,7 @@ pub enum Event {
     RecurrenceSet(Option<Recurrence>),
     IssueRefSet(Option<IssueRef>),
     TimeLogSet(BTreeMap<Date, Duration>),
+    ArchivedSet(bool),
 }
 
 /// Facts a guard needs beyond the task itself. Just the derived `blocked` flag
@@ -169,6 +171,8 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
                 store.set(id, TimeSpent(total)).await;
             }
         }
+        Event::ArchivedSet(true) => store.set(id, Archived).await,
+        Event::ArchivedSet(false) => store.remove::<Archived>(id).await,
     }
 }
 
@@ -240,6 +244,10 @@ async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> V
         Command::SetTimeLog(m) => {
             let cur = store.get::<TimeLog>(id).await.unwrap_or_default();
             no_op_or(&cur.0 == m, Event::TimeLogSet(m.clone()))
+        }
+        Command::SetArchived(a) => {
+            let cur = store.get::<Archived>(id).await.is_some();
+            no_op_or(cur == *a, Event::ArchivedSet(*a))
         }
     }
 }

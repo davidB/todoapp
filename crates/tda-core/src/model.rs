@@ -190,6 +190,17 @@ impl Component for Assignments {
     const NAME: &'static str = "assignments";
 }
 
+/// `Archived` capability: an orthogonal flag, independent of `Status` (a task
+/// can be `done` and archived, or archived without being `done`) — presence
+/// *is* the flag, no payload needed. Hidden from default views by callers
+/// passing `Filter { archived: Some(false), .. }` (spec §13 Q4 direction);
+/// `QueryEngine`/`Filter` itself stay neutral (`None` = no restriction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Archived;
+impl Component for Archived {
+    const NAME: &'static str = "archived";
+}
+
 /// `IssueRef` capability: a static reference to an external issue tracker's
 /// issue (e.g. imported from another tool). `provider` is freeform (no closed
 /// enum) — no live sync, no computed URL.
@@ -374,6 +385,10 @@ pub struct Filter {
     pub within: Option<Id>,
     pub due: Option<DueFilter>,
     pub claimed: Option<bool>,
+    /// `None` = no restriction (matches archived and non-archived alike);
+    /// hiding archived tasks by default is a caller-side choice, not a
+    /// query-engine special case.
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

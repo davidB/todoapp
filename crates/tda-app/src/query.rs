@@ -66,6 +66,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 assignee,
                 within,
                 tags: tag.into_iter().collect(),
+                archived: Some(false),
                 ..Default::default()
             },
             sort: vec![SortKey {
@@ -81,6 +82,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         self.evaluate(&Query {
             filter: Filter {
                 due: Some(DueFilter::Today),
+                archived: Some(false),
                 ..Default::default()
             },
             sort: vec![

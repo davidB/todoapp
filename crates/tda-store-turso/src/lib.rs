@@ -23,6 +23,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema_003_recurrence.sql"),
     include_str!("schema_004_issueref.sql"),
     include_str!("schema_005_timelog.sql"),
+    include_str!("schema_006_archived.sql"),
 ];
 
 pub struct TursoStore {
@@ -133,6 +134,7 @@ fn ctable(name: &str) -> &'static str {
         "recurrence" => "c_recurrence",
         "issueref" => "c_issueref",
         "timelog" => "c_timelog",
+        "archived" => "c_archived",
         _ => unreachable!("unknown component {name}"),
     }
 }
@@ -144,6 +146,15 @@ fn json_blob_table(name: &str) -> Option<&'static str> {
     match name {
         "recurrence" => Some("c_recurrence"),
         "issueref" => Some("c_issueref"),
+        _ => None,
+    }
+}
+
+/// Components that are pure presence-markers (no data column at all — a row
+/// existing *is* the value, e.g. `Archived`).
+fn marker_table(name: &str) -> Option<&'static str> {
+    match name {
+        "archived" => Some("c_archived"),
         _ => None,
     }
 }
@@ -236,6 +247,21 @@ impl ComponentStore for TursoStore {
                 )
                 .await?;
             return serde_json::from_str::<C>(text.as_str()?).ok();
+        }
+        if let Some(table) = marker_table(C::NAME) {
+            let mut rows = self
+                .conn
+                .query(
+                    &format!("SELECT 1 FROM {table} WHERE task_id=?"),
+                    (tid.to_string(),),
+                )
+                .await
+                .unwrap();
+            return if rows.next().await.unwrap().is_some() {
+                serde_json::from_value::<C>(serde_json::Value::Null).ok()
+            } else {
+                None
+            };
         }
         let jv: serde_json::Value = match C::NAME {
             "title" => {
@@ -349,6 +375,16 @@ impl ComponentStore for TursoStore {
             let json = serde_json::to_string(&value).unwrap();
             self.put_scalar(table, "data", &tid, serde_json::Value::String(json))
                 .await;
+            return;
+        }
+        if let Some(table) = marker_table(C::NAME) {
+            self.conn
+                .execute(
+                    &format!("INSERT OR REPLACE INTO {table}(task_id) VALUES (?)"),
+                    (tid,),
+                )
+                .await
+                .unwrap();
             return;
         }
         let v = serde_json::to_value(&value).unwrap();
@@ -485,6 +521,7 @@ impl TaskEntityStore for TursoStore {
             "c_recurrence",
             "c_issueref",
             "c_timelog",
+            "c_archived",
         ] {
             self.conn
                 .execute(&format!("DELETE FROM {t} WHERE task_id=?"), (tid.clone(),))
@@ -721,6 +758,13 @@ impl QueryEngine for TursoStore {
                 "EXISTS (SELECT 1 FROM c_schedule WHERE task_id=t.id AND substr(due_date,1,10) {op} ?)"
             ));
             params.push(text(val));
+        }
+        if let Some(archived) = filter.archived {
+            clauses.push(if archived {
+                "EXISTS (SELECT 1 FROM c_archived WHERE task_id=t.id)".into()
+            } else {
+                "NOT EXISTS (SELECT 1 FROM c_archived WHERE task_id=t.id)".into()
+            });
         }
 
         let mut sql = "SELECT t.id FROM task t".to_string();

@@ -130,6 +130,9 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     ) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetTimeLog(time_log)).await
     }
+    pub async fn set_archived(&self, id: &Id, archived: bool) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::SetArchived(archived)).await
+    }
 
     // ---- structure (FR-4..FR-8): graph-aware, validated here, not in decide -
 

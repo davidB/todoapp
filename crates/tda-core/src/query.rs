@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use crate::model::{
-    Assignments, DueFilter, Filter, Id, LinkKind, Notes, Schedule, Status, Tags, Title,
+    Archived, Assignments, DueFilter, Filter, Id, LinkKind, Notes, Schedule, Status, Tags, Title,
 };
 use crate::ports::{ComponentStore, LinkRepository, TaskEntityStore};
 use crate::temporal::Date;
@@ -94,6 +94,12 @@ where
         // time is display-only, never compared) — only `.date` is read here.
         let date = store.get::<Schedule>(id).await.map(|s| s.0.date);
         if !due_matches(date, due, today) {
+            return false;
+        }
+    }
+    if let Some(archived) = f.archived {
+        let is_archived = store.get::<Archived>(id).await.is_some();
+        if is_archived != archived {
             return false;
         }
     }

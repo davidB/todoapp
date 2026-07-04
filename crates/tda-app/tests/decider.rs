@@ -6,9 +6,9 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Assignment, Assignments, Command, ComponentStore, Date, DecideCtx, Denied, Due, Duration, Id,
-    IssueRef, Recurrence, RepeatCycle, Schedule, Status, TimeLog, TimeSpent, Weekday, apply,
-    decide,
+    Archived, Assignment, Assignments, Command, ComponentStore, Date, DecideCtx, Denied, Due,
+    Duration, Id, IssueRef, Recurrence, RepeatCycle, Schedule, Status, TimeLog, TimeSpent, Weekday,
+    apply, decide,
 };
 use tda_store_mem::MemStore;
 
@@ -236,4 +236,27 @@ async fn time_log_recomputes_cumulative_time_spent() {
     }
     assert_eq!(store.get::<TimeLog>(&id).await, None);
     assert_eq!(store.get::<TimeSpent>(&id).await, None);
+}
+
+#[tokio::test]
+async fn archived_is_orthogonal_to_status() {
+    let (store, id) = task(Status::Done).await;
+    let ctx = DecideCtx::default();
+    let ev = decide(&store, &id, &Command::SetArchived(true), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert!(store.get::<Archived>(&id).await.is_some());
+    // archiving doesn't touch status
+    assert_eq!(store.get::<Status>(&id).await, Some(Status::Done));
+
+    let ev = decide(&store, &id, &Command::SetArchived(false), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert!(store.get::<Archived>(&id).await.is_none());
 }
