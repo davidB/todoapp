@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tda_core::{
-    Archived, Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, Date,
-    DecideCtx, Denied, Due, Duration, Estimate, Id, IdGenerator, IssueRef, LinkKind,
-    LinkRepository, Notes, QueryEngine, Recurrence, Schedule, Status, Tags, TaskEntityStore,
-    TimeLog, TimeSpent, Timestamp, Title, apply, decide,
+    Archived, Assignment, Assignments, Attachment, Attachments, BlobStore, Clock,
+    CollectionRepository, Command, ComponentStore, Date, DecideCtx, Denied, Due, Duration,
+    Estimate, Id, IdGenerator, IssueRef, LinkKind, LinkRepository, Notes, QueryEngine, Recurrence,
+    Schedule, Status, Tags, TaskEntityStore, TimeLog, TimeSpent, Timestamp, Title, apply, decide,
 };
 
 pub struct Services<'a, St> {
@@ -23,6 +23,7 @@ pub struct Services<'a, St> {
     pub query: &'a dyn QueryEngine,
     pub clock: &'a dyn Clock,
     pub ids: &'a dyn IdGenerator,
+    pub blobs: &'a dyn BlobStore,
 }
 
 /// A read-only view of a task assembled from its components — for query results,
@@ -45,6 +46,7 @@ pub struct TaskSnapshot {
     pub issue_ref: Option<IssueRef>,
     pub time_log: BTreeMap<Date, Duration>,
     pub archived: bool,
+    pub attachments: Vec<Attachment>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -135,6 +137,12 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .map(|t| t.0)
                 .unwrap_or_default(),
             archived: self.store.get::<Archived>(id).await.is_some(),
+            attachments: self
+                .store
+                .get::<Attachments>(id)
+                .await
+                .map(|a| a.0)
+                .unwrap_or_default(),
             created_at,
             updated_at,
         })
@@ -177,6 +185,11 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         }
         if t.archived {
             self.store.set(&t.id, Archived).await;
+        }
+        if !t.attachments.is_empty() {
+            self.store
+                .set(&t.id, Attachments(t.attachments.clone()))
+                .await;
         }
     }
 

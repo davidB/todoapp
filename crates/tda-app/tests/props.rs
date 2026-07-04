@@ -31,7 +31,7 @@ proptest! {
     fn blocks_graph_stays_acyclic(pairs in proptest::collection::vec((0usize..6, 0usize..6), 0..40)) {
         rt().block_on(async {
             let (store, clock, ids) = fresh();
-            let s = Services { store: &store, links: &store, collections: &store, query: &store, clock: &clock, ids: &ids };
+            let s = Services { store: &store, links: &store, collections: &store, query: &store, clock: &clock, ids: &ids, blobs: &store };
             let mut nodes: Vec<Id> = Vec::new();
             for _ in 0..6 {
                 nodes.push(s.create("n", None, Status::Todo, []).await.unwrap().id);
@@ -52,7 +52,7 @@ proptest! {
     fn child_order_is_consistent(n in 1usize..8, front in 0usize..8) {
         rt().block_on(async {
             let (store, clock, ids) = fresh();
-            let s = Services { store: &store, links: &store, collections: &store, query: &store, clock: &clock, ids: &ids };
+            let s = Services { store: &store, links: &store, collections: &store, query: &store, clock: &clock, ids: &ids, blobs: &store };
             let p = s.create("p", None, Status::Todo, []).await.unwrap();
             let mut kids: Vec<Id> = Vec::new();
             for _ in 0..n {

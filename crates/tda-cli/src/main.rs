@@ -65,6 +65,7 @@ fn make_svc<'a>(
         query: store,
         clock,
         ids,
+        blobs: store,
     }
 }
 
@@ -262,6 +263,8 @@ enum Cmd {
         #[arg(long)]
         format: Option<FormatArg>,
     },
+    /// Attach a file's contents to a task.
+    Attach { id: String, file: PathBuf },
 }
 
 // ---- main -------------------------------------------------------------------
@@ -558,6 +561,18 @@ async fn main() -> anyhow::Result<()> {
                     print_json(&serde_json::json!({"ok": true}))?;
                 }
             }
+        }
+
+        Cmd::Attach { id, file } => {
+            let bytes = std::fs::read(&file).with_context(|| format!("read {}", file.display()))?;
+            let title = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let task = svc
+                .add_attachment_from_bytes(&Id::new(id), title, bytes, None)
+                .await?;
+            print_json(&task)?;
         }
     }
 

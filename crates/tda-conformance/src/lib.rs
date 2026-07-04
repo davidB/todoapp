@@ -80,6 +80,7 @@ macro_rules! conformance_suite {
                         query: &$store,
                         clock: &$clock,
                         ids: &$ids,
+                        blobs: &$store,
                     }
                 };
             }

@@ -7,13 +7,25 @@
 //! ports otherwise pay); the tree-priority sort + breadcrumbs stay link-walks in
 //! `tda-app`. Push the sort into a recursive CTE only if it shows up hot.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use async_trait::async_trait;
 use tda_core::{
-    Collection, CollectionKind, CollectionRepository, Component, ComponentStore, Date, DueFilter,
-    Filter, Id, Link, LinkKind, LinkRepository, Position, Query, QueryEngine, Status,
+    BlobStore, Collection, CollectionKind, CollectionRepository, Component, ComponentStore, Date,
+    DueFilter, Filter, Id, Link, LinkKind, LinkRepository, Position, Query, QueryEngine, Status,
     TaskEntityStore, Timestamp,
 };
 use turso::Value;
+
+/// Content-addressed id: same bytes ⇒ same id (cheap incidental dedup, not a
+/// content-hash identity guarantee — collisions are possible but not a
+/// practical concern at this scale).
+fn blob_id(bytes: &[u8]) -> Id {
+    let mut h = DefaultHasher::new();
+    bytes.hash(&mut h);
+    Id::new(format!("blob_{:016x}", h.finish()))
+}
 
 /// Schema migrations, applied in order; `PRAGMA user_version` tracks how many ran
 /// (spec §6: versioned from M2). Add the next migration as a new array element.
@@ -24,6 +36,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema_004_issueref.sql"),
     include_str!("schema_005_timelog.sql"),
     include_str!("schema_006_archived.sql"),
+    include_str!("schema_007_attachments.sql"),
 ];
 
 pub struct TursoStore {
@@ -135,6 +148,7 @@ fn ctable(name: &str) -> &'static str {
         "issueref" => "c_issueref",
         "timelog" => "c_timelog",
         "archived" => "c_archived",
+        "attachments" => "c_attachment",
         _ => unreachable!("unknown component {name}"),
     }
 }
@@ -364,6 +378,36 @@ impl ComponentStore for TursoStore {
                 }
                 serde_json::Value::Array(asg)
             }
+            "attachments" => {
+                let mut rows = self
+                    .conn
+                    .query(
+                        "SELECT attachment_id, kind, title, url, blob_id, mime FROM c_attachment \
+                         WHERE task_id=? ORDER BY attachment_id",
+                        (tid.to_string(),),
+                    )
+                    .await
+                    .unwrap();
+                let mut atts = Vec::new();
+                while let Some(r) = rows.next().await.unwrap() {
+                    let opt_text = |v: Value| match v {
+                        Value::Text(s) => serde_json::Value::String(s),
+                        _ => serde_json::Value::Null,
+                    };
+                    atts.push(serde_json::json!({
+                        "id": as_text(r.get_value(0).unwrap()),
+                        "kind": as_text(r.get_value(1).unwrap()),
+                        "title": as_text(r.get_value(2).unwrap()),
+                        "url": opt_text(r.get_value(3).unwrap()),
+                        "blob": opt_text(r.get_value(4).unwrap()),
+                        "mime": opt_text(r.get_value(5).unwrap()),
+                    }));
+                }
+                if atts.is_empty() {
+                    return None;
+                }
+                serde_json::Value::Array(atts)
+            }
             _ => return None,
         };
         serde_json::from_value::<C>(jv).ok()
@@ -455,6 +499,40 @@ impl ComponentStore for TursoStore {
                     }
                 }
             }
+            "attachments" => {
+                self.conn
+                    .execute("DELETE FROM c_attachment WHERE task_id=?", (tid.clone(),))
+                    .await
+                    .unwrap();
+                if let serde_json::Value::Array(arr) = v {
+                    for a in arr {
+                        let str_field =
+                            |k: &str| a.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let opt_field = |k: &str| -> Value {
+                            a.get(k)
+                                .and_then(|x| x.as_str())
+                                .map_or(Value::Null, |s| Value::Text(s.to_string()))
+                        };
+                        self.conn
+                            .execute(
+                                "INSERT OR REPLACE INTO \
+                                 c_attachment(task_id,attachment_id,kind,title,url,blob_id,mime) \
+                                 VALUES (?,?,?,?,?,?,?)",
+                                (
+                                    tid.clone(),
+                                    str_field("id"),
+                                    str_field("kind"),
+                                    str_field("title"),
+                                    opt_field("url"),
+                                    opt_field("blob"),
+                                    opt_field("mime"),
+                                ),
+                            )
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -522,6 +600,7 @@ impl TaskEntityStore for TursoStore {
             "c_issueref",
             "c_timelog",
             "c_archived",
+            "c_attachment",
         ] {
             self.conn
                 .execute(&format!("DELETE FROM {t} WHERE task_id=?"), (tid.clone(),))
@@ -775,5 +854,40 @@ impl QueryEngine for TursoStore {
 
         let rows = self.conn.query(&sql, params).await.unwrap();
         collect_rows(rows, |r| Id::new(as_text(r.get_value(0).unwrap()))).await
+    }
+}
+
+#[async_trait(?Send)]
+impl BlobStore for TursoStore {
+    async fn put(&self, bytes: Vec<u8>) -> Id {
+        let id = blob_id(&bytes);
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO blob(id,content,created_at) VALUES (?,?,?)",
+                (id.0.clone(), Value::Blob(bytes), 0i64),
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn get(&self, id: &Id) -> Option<Vec<u8>> {
+        let mut rows = self
+            .conn
+            .query("SELECT content FROM blob WHERE id=?", (id.0.clone(),))
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap()?;
+        match row.get_value(0).unwrap() {
+            Value::Blob(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    async fn remove(&self, id: &Id) {
+        self.conn
+            .execute("DELETE FROM blob WHERE id=?", (id.0.clone(),))
+            .await
+            .unwrap();
     }
 }

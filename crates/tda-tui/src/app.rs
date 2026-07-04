@@ -145,6 +145,7 @@ fn make_svc<'a>(
         query: store,
         clock,
         ids,
+        blobs: store,
     }
 }
 

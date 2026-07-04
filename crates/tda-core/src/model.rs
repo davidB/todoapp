@@ -190,6 +190,36 @@ impl Component for Assignments {
     const NAME: &'static str = "assignments";
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttachmentKind {
+    Link,
+    File,
+    Image,
+}
+
+/// One attachment: a `Link` never has a `blob` (it's just a URL); `File`/
+/// `Image` may or may not have one — `url` keeps the original source
+/// path/URL either way (e.g. from an import), `blob` is `Some` once actual
+/// bytes have been stored via [`crate::BlobStore`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: Id,
+    pub kind: AttachmentKind,
+    pub title: String,
+    pub url: Option<String>,
+    pub blob: Option<Id>,
+    pub mime: Option<String>,
+}
+
+/// `Attachments` capability: the whole list is one component value (empty ⇒
+/// remove it), like `Tags`/`Assignments`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachments(pub Vec<Attachment>);
+impl Component for Attachments {
+    const NAME: &'static str = "attachments";
+}
+
 /// `Archived` capability: an orthogonal flag, independent of `Status` (a task
 /// can be `done` and archived, or archived without being `done`) — presence
 /// *is* the flag, no payload needed. Hidden from default views by callers

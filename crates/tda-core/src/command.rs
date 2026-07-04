@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 
 use crate::model::{
-    Archived, Assignment, Assignments, Estimate, Id, IssueRef, Notes, Recurrence, Schedule, Status,
-    Tags, TimeLog, TimeSpent, Title,
+    Archived, Assignment, Assignments, Attachment, Attachments, Estimate, Id, IssueRef, Notes,
+    Recurrence, Schedule, Status, Tags, TimeLog, TimeSpent, Title,
 };
 use crate::ports::ComponentStore;
 use crate::temporal::{Date, Due, Duration};
@@ -40,6 +40,8 @@ pub enum Command {
     SetIssueRef(Option<IssueRef>),
     SetTimeLog(BTreeMap<Date, Duration>),
     SetArchived(bool),
+    AddAttachment(Attachment),
+    RemoveAttachment(Id),
 }
 
 /// The decided result of a command, folded by [`apply`].
@@ -61,6 +63,8 @@ pub enum Event {
     IssueRefSet(Option<IssueRef>),
     TimeLogSet(BTreeMap<Date, Duration>),
     ArchivedSet(bool),
+    AttachmentAdded(Attachment),
+    AttachmentRemoved(Id),
 }
 
 /// Facts a guard needs beyond the task itself. Just the derived `blocked` flag
@@ -173,6 +177,17 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
         }
         Event::ArchivedSet(true) => store.set(id, Archived).await,
         Event::ArchivedSet(false) => store.remove::<Archived>(id).await,
+        Event::AttachmentAdded(a) => {
+            let mut atts = store.get::<Attachments>(id).await.unwrap_or_default();
+            atts.0.retain(|x| x.id != a.id);
+            atts.0.push(a.clone());
+            store.set(id, atts).await;
+        }
+        Event::AttachmentRemoved(aid) => {
+            let mut atts = store.get::<Attachments>(id).await.unwrap_or_default();
+            atts.0.retain(|x| &x.id != aid);
+            detach_if_empty(store, id, atts.0.is_empty(), atts).await;
+        }
     }
 }
 
@@ -249,6 +264,8 @@ async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> V
             let cur = store.get::<Archived>(id).await.is_some();
             no_op_or(cur == *a, Event::ArchivedSet(*a))
         }
+        Command::AddAttachment(a) => vec![Event::AttachmentAdded(a.clone())],
+        Command::RemoveAttachment(aid) => vec![Event::AttachmentRemoved(aid.clone())],
     }
 }
 

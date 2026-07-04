@@ -78,6 +78,18 @@ pub trait LinkRepository {
     async fn incoming(&self, to: &Id, kind: LinkKind) -> Vec<Link>;
 }
 
+/// Blob storage for `Attachment` file/image content (spec §3): separate from
+/// `ComponentStore` since blobs aren't a per-task-capability row — a task's
+/// `Attachments` component only carries a `blob` id reference.
+#[async_trait(?Send)]
+pub trait BlobStore {
+    /// Store `bytes`, returning an id to fetch them back by. Content-addressed
+    /// (same bytes ⇒ same id) — a cheap, incidental dedup, not a guarantee.
+    async fn put(&self, bytes: Vec<u8>) -> Id;
+    async fn get(&self, id: &Id) -> Option<Vec<u8>>;
+    async fn remove(&self, id: &Id);
+}
+
 #[async_trait(?Send)]
 pub trait CollectionRepository {
     async fn save(&self, collection: Collection);

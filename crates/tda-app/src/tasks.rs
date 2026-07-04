@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tda_core::{
-    Command, ComponentStore, Date, Due, Duration, Id, IssueRef, Link, LinkKind, Position,
-    Recurrence, Status, Tags, TaskEntityStore, Title,
+    Attachment, AttachmentKind, Command, ComponentStore, Date, Due, Duration, Id, IssueRef, Link,
+    LinkKind, Position, Recurrence, Status, Tags, TaskEntityStore, Title,
 };
 
 use crate::service::{Error, Services, TaskSnapshot};
@@ -132,6 +132,49 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     }
     pub async fn set_archived(&self, id: &Id, archived: bool) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetArchived(archived)).await
+    }
+    /// Attach a file's actual bytes (stored via `BlobStore`) to a task.
+    pub async fn add_attachment_from_bytes(
+        &self,
+        id: &Id,
+        title: impl Into<String>,
+        bytes: Vec<u8>,
+        mime: Option<String>,
+    ) -> Result<TaskSnapshot, Error> {
+        let blob = self.blobs.put(bytes).await;
+        let att = Attachment {
+            id: self.ids.next_id(),
+            kind: AttachmentKind::File,
+            title: title.into(),
+            url: None,
+            blob: Some(blob),
+            mime,
+        };
+        self.run(id, Command::AddAttachment(att)).await
+    }
+    /// Attach a bare link (no stored bytes) to a task.
+    pub async fn add_attachment_link(
+        &self,
+        id: &Id,
+        title: impl Into<String>,
+        url: impl Into<String>,
+    ) -> Result<TaskSnapshot, Error> {
+        let att = Attachment {
+            id: self.ids.next_id(),
+            kind: AttachmentKind::Link,
+            title: title.into(),
+            url: Some(url.into()),
+            blob: None,
+            mime: None,
+        };
+        self.run(id, Command::AddAttachment(att)).await
+    }
+    pub async fn remove_attachment(
+        &self,
+        id: &Id,
+        attachment_id: Id,
+    ) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::RemoveAttachment(attachment_id)).await
     }
 
     // ---- structure (FR-4..FR-8): graph-aware, validated here, not in decide -

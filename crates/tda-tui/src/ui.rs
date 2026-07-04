@@ -346,6 +346,7 @@ mod tests {
             query: &app.store,
             clock: &app.clock,
             ids: &app.ids,
+            blobs: &app.store,
         };
         let root = svc.create("Root", None, Status::Todo, []).await.unwrap();
         svc.set_estimate(&root.id, Some(Duration::from_minutes(5 * 480)))

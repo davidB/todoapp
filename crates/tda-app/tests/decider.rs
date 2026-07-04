@@ -6,9 +6,9 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Archived, Assignment, Assignments, Command, ComponentStore, Date, DecideCtx, Denied, Due,
-    Duration, Id, IssueRef, Recurrence, RepeatCycle, Schedule, Status, TimeLog, TimeSpent, Weekday,
-    apply, decide,
+    Archived, Assignment, Assignments, Attachment, AttachmentKind, Attachments, Command,
+    ComponentStore, Date, DecideCtx, Denied, Due, Duration, Id, IssueRef, Recurrence, RepeatCycle,
+    Schedule, Status, TimeLog, TimeSpent, Weekday, apply, decide,
 };
 use tda_store_mem::MemStore;
 
@@ -259,4 +259,36 @@ async fn archived_is_orthogonal_to_status() {
         apply(&store, &id, e).await;
     }
     assert!(store.get::<Archived>(&id).await.is_none());
+}
+
+#[tokio::test]
+async fn attachments_add_and_remove() {
+    let (store, id) = task(Status::Todo).await;
+    let ctx = DecideCtx::default();
+    let att = Attachment {
+        id: Id::new("a1"),
+        kind: AttachmentKind::Link,
+        title: "docs".into(),
+        url: Some("https://example.com".into()),
+        blob: None,
+        mime: None,
+    };
+    let ev = decide(&store, &id, &Command::AddAttachment(att.clone()), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert_eq!(
+        store.get::<Attachments>(&id).await.map(|a| a.0),
+        Some(vec![att])
+    );
+
+    let ev = decide(&store, &id, &Command::RemoveAttachment(Id::new("a1")), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert_eq!(store.get::<Attachments>(&id).await, None);
 }
