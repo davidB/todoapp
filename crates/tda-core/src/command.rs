@@ -9,7 +9,8 @@
 //! the tree/DAG live. Both still flow through guard-style checks (FR-26).
 
 use crate::model::{
-    Assignment, Assignments, Estimate, Id, Notes, Schedule, Status, Tags, TimeSpent, Title,
+    Assignment, Assignments, Estimate, Id, Notes, Recurrence, Schedule, Status, Tags, TimeSpent,
+    Title,
 };
 use crate::ports::ComponentStore;
 use crate::temporal::{Due, Duration};
@@ -33,6 +34,7 @@ pub enum Command {
     Assign(Id),
     Unassign(Id),
     Claim(Id),
+    SetRecurrence(Option<Recurrence>),
 }
 
 /// The decided result of a command, folded by [`apply`].
@@ -50,6 +52,7 @@ pub enum Event {
     Unassigned(Id),
     /// Sets `wip` and marks (or adds) the claimer's assignment as claimed.
     Claimed(Id),
+    RecurrenceSet(Option<Recurrence>),
 }
 
 /// Facts a guard needs beyond the task itself. Just the derived `blocked` flag
@@ -84,6 +87,21 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
         Event::TitleSet(t) => store.set(id, Title(t.clone())).await,
         Event::NotesSet(Some(n)) => store.set(id, Notes(n.clone())).await,
         Event::NotesSet(None) => store.remove::<Notes>(id).await,
+        // A recurring task doesn't stay `done`: it resets in place (spec
+        // decision — no per-occurrence spawning). No-op if it has no
+        // `Schedule` to advance from.
+        Event::StatusSet(Status::Done) => {
+            match (
+                store.get::<Recurrence>(id).await,
+                store.get::<Schedule>(id).await,
+            ) {
+                (Some(rec), Some(sched)) => {
+                    store.set(id, Schedule(rec.next_due(sched.0))).await;
+                    store.set(id, Status::Todo).await;
+                }
+                _ => store.set(id, Status::Done).await,
+            }
+        }
         Event::StatusSet(s) => store.set(id, *s).await,
         Event::ScheduleSet(Some(d)) => store.set(id, Schedule(*d)).await,
         Event::ScheduleSet(None) => store.remove::<Schedule>(id).await,
@@ -131,6 +149,8 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
             }
             store.set(id, asg).await;
         }
+        Event::RecurrenceSet(Some(r)) => store.set(id, r.clone()).await,
+        Event::RecurrenceSet(None) => store.remove::<Recurrence>(id).await,
     }
 }
 
@@ -191,6 +211,10 @@ async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> V
             no_op_or(!has, Event::Unassigned(a.clone()))
         }
         Command::Claim(a) => vec![Event::Claimed(a.clone())],
+        Command::SetRecurrence(r) => {
+            let cur = store.get::<Recurrence>(id).await;
+            no_op_or(&cur == r, Event::RecurrenceSet(r.clone()))
+        }
     }
 }
 

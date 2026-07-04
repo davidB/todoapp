@@ -6,11 +6,12 @@
 //! *aggregate* — a task assembled from the components a caller projected (see
 //! [`crate::Projection`]) — and is what `decide`/`apply` operate on.
 
+use jiff::ToSpan;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::temporal::{Date, Due, Duration};
+use crate::temporal::{Date, Due, Duration, Time};
 
 /// Stable identity for tasks, actors, collections. Opaque string (a random ULID
 /// in real adapters; a sequence in tests). Serializes transparently as that
@@ -177,6 +178,105 @@ impl Component for Assignments {
     const NAME: &'static str = "assignments";
 }
 
+/// A day of the week, for [`RepeatCycle::Weekly`]. A local enum (not jiff's)
+/// so serde stays as simple as [`Status`]'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Weekday {
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
+}
+
+impl Weekday {
+    fn from_jiff(w: jiff::civil::Weekday) -> Self {
+        match w.to_monday_zero_offset() {
+            0 => Weekday::Mon,
+            1 => Weekday::Tue,
+            2 => Weekday::Wed,
+            3 => Weekday::Thu,
+            4 => Weekday::Fri,
+            5 => Weekday::Sat,
+            _ => Weekday::Sun,
+        }
+    }
+}
+
+/// A recurrence rule (spec §3): how often a [`Recurrence`]-carrying task's due
+/// date advances when it's completed (see `Recurrence::next_due`). Covers the
+/// common cases (daily interval, weekly weekday set, monthly same-day) — not a
+/// full RRULE engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RepeatCycle {
+    Daily { every_n_days: u32 },
+    Weekly { weekdays: BTreeSet<Weekday> },
+    Monthly { every_n_months: u32 },
+}
+
+/// `Recurrence` capability: a task carrying this **resets in place** on
+/// completion instead of staying `done` — spec decision: no per-occurrence
+/// task spawning, the same task's `Schedule` advances and its `Status` goes
+/// back to `todo` (see the `Event::StatusSet(Status::Done)` apply arm).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recurrence {
+    pub cycle: RepeatCycle,
+    /// Time-of-day to carry onto the recomputed due date; falls back to the
+    /// current due's time if unset.
+    pub time: Option<Time>,
+}
+impl Component for Recurrence {
+    const NAME: &'static str = "recurrence";
+}
+
+impl Recurrence {
+    /// The next due date/time after `current`, per this rule.
+    pub fn next_due(&self, current: Due) -> Due {
+        let date = match &self.cycle {
+            RepeatCycle::Daily { every_n_days } => {
+                let n = i64::from((*every_n_days).max(1));
+                current
+                    .date
+                    .0
+                    .checked_add(n.days())
+                    .map(Date)
+                    .unwrap_or(current.date)
+            }
+            RepeatCycle::Weekly { weekdays } => next_weekday(current.date, weekdays),
+            RepeatCycle::Monthly { every_n_months } => {
+                let n = i64::from((*every_n_months).max(1));
+                current
+                    .date
+                    .0
+                    .checked_add(n.months())
+                    .map(Date)
+                    .unwrap_or(current.date)
+            }
+        };
+        Due {
+            date,
+            time: self.time.or(current.time),
+        }
+    }
+}
+
+/// The next date after `from` whose weekday is in `weekdays` (or, if empty,
+/// just the next day — an under-specified rule still advances).
+fn next_weekday(from: Date, weekdays: &BTreeSet<Weekday>) -> Date {
+    let mut d = from.0;
+    for _ in 0..7 {
+        d = d.checked_add(1.day()).unwrap_or(d);
+        if weekdays.is_empty() || weekdays.contains(&Weekday::from_jiff(d.weekday())) {
+            return Date(d);
+        }
+    }
+    from
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LinkKind {
@@ -280,4 +380,53 @@ pub enum Dir {
 pub struct SortKey {
     pub key: SortField,
     pub dir: Dir,
+}
+
+#[cfg(test)]
+mod recurrence_tests {
+    use super::*;
+
+    fn due(s: &str) -> Due {
+        Due::parse(s).unwrap()
+    }
+
+    #[test]
+    fn daily_advances_by_n_days() {
+        let rec = Recurrence {
+            cycle: RepeatCycle::Daily { every_n_days: 3 },
+            time: None,
+        };
+        assert_eq!(rec.next_due(due("2026-07-01")).date, due("2026-07-04").date);
+    }
+
+    #[test]
+    fn weekly_finds_next_matching_weekday() {
+        // 2026-07-01 is a Wednesday; next Mon/Wed/Fri after it is Friday.
+        let rec = Recurrence {
+            cycle: RepeatCycle::Weekly {
+                weekdays: BTreeSet::from([Weekday::Mon, Weekday::Wed, Weekday::Fri]),
+            },
+            time: None,
+        };
+        assert_eq!(rec.next_due(due("2026-07-01")).date, due("2026-07-03").date);
+    }
+
+    #[test]
+    fn monthly_advances_by_n_months_same_day() {
+        let rec = Recurrence {
+            cycle: RepeatCycle::Monthly { every_n_months: 1 },
+            time: None,
+        };
+        assert_eq!(rec.next_due(due("2026-07-15")).date, due("2026-08-15").date);
+    }
+
+    #[test]
+    fn recurrence_time_wins_over_carried_time() {
+        let rec = Recurrence {
+            cycle: RepeatCycle::Daily { every_n_days: 1 },
+            time: Some(Time::parse("09:00").unwrap()),
+        };
+        let next = rec.next_due(due("2026-07-01 18:00"));
+        assert_eq!(next.time, Some(Time::parse("09:00").unwrap()));
+    }
 }

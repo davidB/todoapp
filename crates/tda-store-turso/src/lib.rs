@@ -20,6 +20,7 @@ use turso::Value;
 const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("schema_002_paused_status.sql"),
+    include_str!("schema_003_recurrence.sql"),
 ];
 
 pub struct TursoStore {
@@ -127,6 +128,7 @@ fn ctable(name: &str) -> &'static str {
         "timespent" => "c_timespent",
         "tags" => "c_tag",
         "assignments" => "c_assignment",
+        "recurrence" => "c_recurrence",
         _ => unreachable!("unknown component {name}"),
     }
 }
@@ -207,6 +209,17 @@ impl TursoStore {
 impl ComponentStore for TursoStore {
     async fn get<C: Component>(&self, id: &Id) -> Option<C> {
         let tid = id.0.as_str();
+        // `recurrence` is a nested rule, not a scalar/list — stored as one
+        // JSON-serialized TEXT column, decoded directly rather than through
+        // the scalar-value bridge the rest of this match uses.
+        if C::NAME == "recurrence" {
+            let text = self
+                .scalar("SELECT data FROM c_recurrence WHERE task_id=?", tid, |v| {
+                    serde_json::Value::String(as_text(v))
+                })
+                .await?;
+            return serde_json::from_str::<C>(text.as_str()?).ok();
+        }
         let jv: serde_json::Value = match C::NAME {
             "title" => {
                 self.scalar("SELECT title FROM c_title WHERE task_id=?", tid, |v| {
@@ -295,6 +308,17 @@ impl ComponentStore for TursoStore {
 
     async fn set<C: Component>(&self, id: &Id, value: C) {
         let tid = id.0.clone();
+        if C::NAME == "recurrence" {
+            let json = serde_json::to_string(&value).unwrap();
+            self.put_scalar(
+                "c_recurrence",
+                "data",
+                &tid,
+                serde_json::Value::String(json),
+            )
+            .await;
+            return;
+        }
         let v = serde_json::to_value(&value).unwrap();
         match C::NAME {
             "title" => self.put_scalar("c_title", "title", &tid, v).await,
@@ -408,6 +432,7 @@ impl TaskEntityStore for TursoStore {
             "c_timespent",
             "c_tag",
             "c_assignment",
+            "c_recurrence",
         ] {
             self.conn
                 .execute(&format!("DELETE FROM {t} WHERE task_id=?"), (tid.clone(),))

@@ -3,8 +3,11 @@
 //! capability-keyed core moved here from `tda-core` so the core stays free of a
 //! `tokio` dev-dependency.
 
+use std::collections::BTreeSet;
+
 use tda_core::{
-    Assignment, Assignments, Command, ComponentStore, DecideCtx, Denied, Id, Status, apply, decide,
+    Assignment, Assignments, Command, ComponentStore, DecideCtx, Denied, Due, Id, Recurrence,
+    RepeatCycle, Schedule, Status, Weekday, apply, decide,
 };
 use tda_store_mem::MemStore;
 
@@ -112,4 +115,51 @@ async fn claim_with_no_assignees_adds_claimer() {
     let asg = store.get::<Assignments>(&id).await.unwrap();
     assert_eq!(asg.0.len(), 1);
     assert!(asg.0[0].claimed);
+}
+
+#[tokio::test]
+async fn completing_a_recurring_task_resets_it_instead_of_staying_done() {
+    let (store, id) = task(Status::Todo).await;
+    store
+        .set(&id, Schedule(Due::parse("2026-07-01").unwrap()))
+        .await;
+    store
+        .set(
+            &id,
+            Recurrence {
+                cycle: RepeatCycle::Weekly {
+                    weekdays: BTreeSet::from([Weekday::Wed]),
+                },
+                time: None,
+            },
+        )
+        .await;
+
+    let ctx = DecideCtx::default();
+    let ev = decide(&store, &id, &Command::SetStatus(Status::Done), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+
+    // 2026-07-01 is a Wednesday, so the next Wednesday is 2026-07-08.
+    assert_eq!(store.get::<Status>(&id).await, Some(Status::Todo));
+    assert_eq!(
+        store.get::<Schedule>(&id).await.map(|s| s.0),
+        Some(Due::parse("2026-07-08").unwrap())
+    );
+}
+
+#[tokio::test]
+async fn completing_a_non_recurring_task_stays_done() {
+    let (store, id) = task(Status::Todo).await;
+    let ctx = DecideCtx::default();
+    let ev = decide(&store, &id, &Command::SetStatus(Status::Done), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert_eq!(store.get::<Status>(&id).await, Some(Status::Done));
 }

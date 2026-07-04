@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use tda_core::{
     Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, DecideCtx,
     Denied, Due, Duration, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, QueryEngine,
-    Schedule, Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title, apply, decide,
+    Recurrence, Schedule, Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title, apply,
+    decide,
 };
 
 pub struct Services<'a, St> {
@@ -40,6 +41,7 @@ pub struct TaskSnapshot {
     pub time_spent_minutes: Duration,
     pub tags: BTreeSet<String>,
     pub assignments: Vec<Assignment>,
+    pub recurrence: Option<Recurrence>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -121,6 +123,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .await
                 .map(|a| a.0)
                 .unwrap_or_default(),
+            recurrence: self.store.get::<Recurrence>(id).await,
             created_at,
             updated_at,
         })
@@ -151,6 +154,9 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
             self.store
                 .set(&t.id, Assignments(t.assignments.clone()))
                 .await;
+        }
+        if let Some(r) = &t.recurrence {
+            self.store.set(&t.id, r.clone()).await;
         }
     }
 

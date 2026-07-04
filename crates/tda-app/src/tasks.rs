@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Command, ComponentStore, Due, Duration, Id, Link, LinkKind, Position, Status, Tags,
+    Command, ComponentStore, Due, Duration, Id, Link, LinkKind, Position, Recurrence, Status, Tags,
     TaskEntityStore, Title,
 };
 
@@ -106,6 +106,15 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     /// FR-11: claim a `todo` task (open if unassigned, else assignee-only).
     pub async fn claim(&self, id: &Id, actor: Id) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::Claim(actor)).await
+    }
+    /// A recurring task resets in place on completion instead of staying
+    /// `done` (see `Event::StatusSet(Status::Done)`'s apply arm).
+    pub async fn set_recurrence(
+        &self,
+        id: &Id,
+        recurrence: Option<Recurrence>,
+    ) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::SetRecurrence(recurrence)).await
     }
 
     // ---- structure (FR-4..FR-8): graph-aware, validated here, not in decide -
