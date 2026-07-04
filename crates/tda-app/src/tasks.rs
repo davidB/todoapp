@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Command, ComponentStore, Due, Duration, Id, Link, LinkKind, Position, Recurrence, Status, Tags,
-    TaskEntityStore, Title,
+    Command, ComponentStore, Due, Duration, Id, IssueRef, Link, LinkKind, Position, Recurrence,
+    Status, Tags, TaskEntityStore, Title,
 };
 
 use crate::service::{Error, Services, TaskSnapshot};
@@ -115,6 +115,13 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         recurrence: Option<Recurrence>,
     ) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetRecurrence(recurrence)).await
+    }
+    pub async fn set_issue_ref(
+        &self,
+        id: &Id,
+        issue_ref: Option<IssueRef>,
+    ) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::SetIssueRef(issue_ref)).await
     }
 
     // ---- structure (FR-4..FR-8): graph-aware, validated here, not in decide -

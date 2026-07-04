@@ -11,9 +11,9 @@ use std::collections::{BTreeSet, HashSet};
 use serde::{Deserialize, Serialize};
 use tda_core::{
     Assignment, Assignments, Clock, CollectionRepository, Command, ComponentStore, DecideCtx,
-    Denied, Due, Duration, Estimate, Id, IdGenerator, LinkKind, LinkRepository, Notes, QueryEngine,
-    Recurrence, Schedule, Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title, apply,
-    decide,
+    Denied, Due, Duration, Estimate, Id, IdGenerator, IssueRef, LinkKind, LinkRepository, Notes,
+    QueryEngine, Recurrence, Schedule, Status, Tags, TaskEntityStore, TimeSpent, Timestamp, Title,
+    apply, decide,
 };
 
 pub struct Services<'a, St> {
@@ -42,6 +42,7 @@ pub struct TaskSnapshot {
     pub tags: BTreeSet<String>,
     pub assignments: Vec<Assignment>,
     pub recurrence: Option<Recurrence>,
+    pub issue_ref: Option<IssueRef>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -124,6 +125,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .map(|a| a.0)
                 .unwrap_or_default(),
             recurrence: self.store.get::<Recurrence>(id).await,
+            issue_ref: self.store.get::<IssueRef>(id).await,
             created_at,
             updated_at,
         })
@@ -156,6 +158,9 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .await;
         }
         if let Some(r) = &t.recurrence {
+            self.store.set(&t.id, r.clone()).await;
+        }
+        if let Some(r) = &t.issue_ref {
             self.store.set(&t.id, r.clone()).await;
         }
     }

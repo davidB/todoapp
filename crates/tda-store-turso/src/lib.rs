@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("schema_002_paused_status.sql"),
     include_str!("schema_003_recurrence.sql"),
+    include_str!("schema_004_issueref.sql"),
 ];
 
 pub struct TursoStore {
@@ -129,7 +130,19 @@ fn ctable(name: &str) -> &'static str {
         "tags" => "c_tag",
         "assignments" => "c_assignment",
         "recurrence" => "c_recurrence",
+        "issueref" => "c_issueref",
         _ => unreachable!("unknown component {name}"),
+    }
+}
+
+/// Components whose value is a nested/structured shape (not a flat scalar or
+/// list) are stored as one JSON-serialized TEXT column in their own table,
+/// rather than exploded into per-field columns.
+fn json_blob_table(name: &str) -> Option<&'static str> {
+    match name {
+        "recurrence" => Some("c_recurrence"),
+        "issueref" => Some("c_issueref"),
+        _ => None,
     }
 }
 
@@ -209,14 +222,16 @@ impl TursoStore {
 impl ComponentStore for TursoStore {
     async fn get<C: Component>(&self, id: &Id) -> Option<C> {
         let tid = id.0.as_str();
-        // `recurrence` is a nested rule, not a scalar/list — stored as one
-        // JSON-serialized TEXT column, decoded directly rather than through
-        // the scalar-value bridge the rest of this match uses.
-        if C::NAME == "recurrence" {
+        // Nested/structured components (not a flat scalar or list) are stored
+        // as one JSON-serialized TEXT column, decoded directly rather than
+        // through the scalar-value bridge the rest of this match uses.
+        if let Some(table) = json_blob_table(C::NAME) {
             let text = self
-                .scalar("SELECT data FROM c_recurrence WHERE task_id=?", tid, |v| {
-                    serde_json::Value::String(as_text(v))
-                })
+                .scalar(
+                    &format!("SELECT data FROM {table} WHERE task_id=?"),
+                    tid,
+                    |v| serde_json::Value::String(as_text(v)),
+                )
                 .await?;
             return serde_json::from_str::<C>(text.as_str()?).ok();
         }
@@ -308,15 +323,10 @@ impl ComponentStore for TursoStore {
 
     async fn set<C: Component>(&self, id: &Id, value: C) {
         let tid = id.0.clone();
-        if C::NAME == "recurrence" {
+        if let Some(table) = json_blob_table(C::NAME) {
             let json = serde_json::to_string(&value).unwrap();
-            self.put_scalar(
-                "c_recurrence",
-                "data",
-                &tid,
-                serde_json::Value::String(json),
-            )
-            .await;
+            self.put_scalar(table, "data", &tid, serde_json::Value::String(json))
+                .await;
             return;
         }
         let v = serde_json::to_value(&value).unwrap();
@@ -433,6 +443,7 @@ impl TaskEntityStore for TursoStore {
             "c_tag",
             "c_assignment",
             "c_recurrence",
+            "c_issueref",
         ] {
             self.conn
                 .execute(&format!("DELETE FROM {t} WHERE task_id=?"), (tid.clone(),))

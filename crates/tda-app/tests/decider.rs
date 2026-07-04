@@ -6,8 +6,8 @@
 use std::collections::BTreeSet;
 
 use tda_core::{
-    Assignment, Assignments, Command, ComponentStore, DecideCtx, Denied, Due, Id, Recurrence,
-    RepeatCycle, Schedule, Status, Weekday, apply, decide,
+    Assignment, Assignments, Command, ComponentStore, DecideCtx, Denied, Due, Id, IssueRef,
+    Recurrence, RepeatCycle, Schedule, Status, Weekday, apply, decide,
 };
 use tda_store_mem::MemStore;
 
@@ -162,4 +162,35 @@ async fn completing_a_non_recurring_task_stays_done() {
         apply(&store, &id, e).await;
     }
     assert_eq!(store.get::<Status>(&id).await, Some(Status::Done));
+}
+
+#[tokio::test]
+async fn issue_ref_set_and_cleared() {
+    let (store, id) = task(Status::Todo).await;
+    let ctx = DecideCtx::default();
+    let issue_ref = IssueRef {
+        provider: "GITHUB".into(),
+        id: "25".into(),
+        url: None,
+    };
+    let ev = decide(
+        &store,
+        &id,
+        &Command::SetIssueRef(Some(issue_ref.clone())),
+        &ctx,
+    )
+    .await
+    .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert_eq!(store.get::<IssueRef>(&id).await, Some(issue_ref));
+
+    let ev = decide(&store, &id, &Command::SetIssueRef(None), &ctx)
+        .await
+        .unwrap();
+    for e in &ev {
+        apply(&store, &id, e).await;
+    }
+    assert_eq!(store.get::<IssueRef>(&id).await, None);
 }

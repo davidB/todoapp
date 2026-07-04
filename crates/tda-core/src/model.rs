@@ -178,6 +178,19 @@ impl Component for Assignments {
     const NAME: &'static str = "assignments";
 }
 
+/// `IssueRef` capability: a static reference to an external issue tracker's
+/// issue (e.g. imported from another tool). `provider` is freeform (no closed
+/// enum) — no live sync, no computed URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueRef {
+    pub provider: String,
+    pub id: String,
+    pub url: Option<String>,
+}
+impl Component for IssueRef {
+    const NAME: &'static str = "issueref";
+}
+
 /// A day of the week, for [`RepeatCycle::Weekly`]. A local enum (not jiff's)
 /// so serde stays as simple as [`Status`]'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

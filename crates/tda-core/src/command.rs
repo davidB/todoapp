@@ -9,8 +9,8 @@
 //! the tree/DAG live. Both still flow through guard-style checks (FR-26).
 
 use crate::model::{
-    Assignment, Assignments, Estimate, Id, Notes, Recurrence, Schedule, Status, Tags, TimeSpent,
-    Title,
+    Assignment, Assignments, Estimate, Id, IssueRef, Notes, Recurrence, Schedule, Status, Tags,
+    TimeSpent, Title,
 };
 use crate::ports::ComponentStore;
 use crate::temporal::{Due, Duration};
@@ -35,6 +35,7 @@ pub enum Command {
     Unassign(Id),
     Claim(Id),
     SetRecurrence(Option<Recurrence>),
+    SetIssueRef(Option<IssueRef>),
 }
 
 /// The decided result of a command, folded by [`apply`].
@@ -53,6 +54,7 @@ pub enum Event {
     /// Sets `wip` and marks (or adds) the claimer's assignment as claimed.
     Claimed(Id),
     RecurrenceSet(Option<Recurrence>),
+    IssueRefSet(Option<IssueRef>),
 }
 
 /// Facts a guard needs beyond the task itself. Just the derived `blocked` flag
@@ -151,6 +153,8 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
         }
         Event::RecurrenceSet(Some(r)) => store.set(id, r.clone()).await,
         Event::RecurrenceSet(None) => store.remove::<Recurrence>(id).await,
+        Event::IssueRefSet(Some(r)) => store.set(id, r.clone()).await,
+        Event::IssueRefSet(None) => store.remove::<IssueRef>(id).await,
     }
 }
 
@@ -214,6 +218,10 @@ async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> V
         Command::SetRecurrence(r) => {
             let cur = store.get::<Recurrence>(id).await;
             no_op_or(&cur == r, Event::RecurrenceSet(r.clone()))
+        }
+        Command::SetIssueRef(r) => {
+            let cur = store.get::<IssueRef>(id).await;
+            no_op_or(&cur == r, Event::IssueRefSet(r.clone()))
         }
     }
 }
