@@ -1,0 +1,18 @@
+[package]
+name = "todoapp-store-turso"
+description = "tda persistence adapter over Turso (embedded SQLite-compatible), spec §7."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+todoapp-core.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+turso.workspace = true
+
+[dev-dependencies]
+todoapp-app.workspace = true
+todoapp-conformance.workspace = true
+tokio.workspace = true

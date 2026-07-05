@@ -1,0 +1,141 @@
+//! Export/import a branch (FR-16/FR-17). JSON round-trips exactly; Markdown is
+//! the human/agent task-list form (title + checkbox status + indentation depth).
+
+use serde::{Deserialize, Serialize};
+use todoapp_core::{ComponentStore, Id, Link, LinkKind, Status, TaskEntityStore};
+
+use crate::service::{Error, Services, TaskSnapshot};
+
+/// Self-contained snapshot of a branch: its tasks and the `child`/`blocks` edges
+/// among them. Deterministically ordered so `export → import → export` is stable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Export {
+    pub tasks: Vec<TaskSnapshot>,
+    pub links: Vec<Link>,
+}
+
+impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
+    /// Collect `root` + its descendant subtree (tasks and the edges among them).
+    pub async fn export(&self, root: &Id) -> Result<Export, Error> {
+        let mut ids = self.descendants(root).await;
+        ids.insert(root.clone());
+
+        let mut tasks: Vec<TaskSnapshot> = Vec::new();
+        for id in &ids {
+            if let Ok(t) = self.snapshot(id).await {
+                tasks.push(t);
+            }
+        }
+        tasks.sort_by(|a, b| a.id.cmp(&b.id));
+
+        let mut links = Vec::new();
+        for id in &ids {
+            for kind in [LinkKind::Child, LinkKind::Blocks] {
+                for l in self.links.outgoing(id, kind).await {
+                    if ids.contains(&l.to) {
+                        links.push(l);
+                    }
+                }
+            }
+        }
+        links.sort_by(|a, b| {
+            (a.from.as_str(), a.to.as_str(), format!("{:?}", a.kind)).cmp(&(
+                b.from.as_str(),
+                b.to.as_str(),
+                format!("{:?}", b.kind),
+            ))
+        });
+        Ok(Export { tasks, links })
+    }
+
+    pub async fn export_json(&self, root: &Id) -> Result<String, Error> {
+        let export = self.export(root).await?;
+        serde_json::to_string_pretty(&export).map_err(|e| Error::Import(e.to_string()))
+    }
+
+    /// FR-17: ingest an `Export` (round-trips with [`Self::export`]).
+    pub async fn import_json(&self, json: &str) -> Result<(), Error> {
+        let export: Export =
+            serde_json::from_str(json).map_err(|e| Error::Import(e.to_string()))?;
+        for task in &export.tasks {
+            self.write_snapshot(task).await;
+        }
+        // Tasks with a `child` parent inside the payload (computed over the
+        // import, not the whole store).
+        let parented: std::collections::HashSet<&Id> = export
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Child)
+            .map(|l| &l.to)
+            .collect();
+        for link in &export.links {
+            self.links.put(link.clone()).await;
+        }
+        // Branch roots (no parent in the payload) attach under the virtual root,
+        // so the re-imported branch is a top-level task (`roots()` invariant).
+        for task in &export.tasks {
+            if !parented.contains(&task.id) {
+                self.attach(&task.id, &Id::root(), None).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// FR-16: Markdown task list of a branch (DFS over `child`, position order).
+    /// Iterative DFS (explicit stack) to avoid boxing an async recursion.
+    pub async fn export_md(&self, root: &Id) -> Result<String, Error> {
+        let mut out = String::new();
+        let mut stack = vec![(root.clone(), 0usize)];
+        while let Some((id, depth)) = stack.pop() {
+            let task = self.snapshot(&id).await?;
+            let mark = if task.status == Status::Done {
+                "x"
+            } else {
+                " "
+            };
+            out.push_str(&"  ".repeat(depth));
+            out.push_str(&format!("- [{mark}] {}\n", task.title));
+            // push children in reverse so the first sibling is visited next
+            for link in self.children_of(&id).await.into_iter().rev() {
+                stack.push((link.to, depth + 1));
+            }
+        }
+        Ok(out)
+    }
+
+    /// FR-17: parse a Markdown task list into a tree (indent = depth). Status
+    /// comes from the checkbox (`[x]` → done, else todo). Returns the roots.
+    pub async fn import_md(&self, md: &str) -> Result<Vec<TaskSnapshot>, Error> {
+        let mut roots = Vec::new();
+        let mut stack: Vec<Id> = Vec::new();
+        for raw in md.lines() {
+            let Some((depth, mark, title)) = parse_md_line(raw) else {
+                continue;
+            };
+            stack.truncate(depth);
+            let parent = stack.last().cloned();
+            let status = if mark == 'x' {
+                Status::Done
+            } else {
+                Status::Todo
+            };
+            let task = self.create(title, parent.as_ref(), status, []).await?;
+            if parent.is_none() {
+                roots.push(task.clone());
+            }
+            stack.push(task.id.clone());
+        }
+        Ok(roots)
+    }
+}
+
+/// `(depth, checkbox char, title)` for a `- [ ] ...` line; `None` for others.
+fn parse_md_line(line: &str) -> Option<(usize, char, &str)> {
+    let indent = line.len() - line.trim_start().len();
+    let depth = indent / 2;
+    let rest = line.trim_start();
+    let rest = rest.strip_prefix("- [")?;
+    let mark = rest.chars().next()?;
+    let title = rest.get(1..)?.strip_prefix("] ")?.trim();
+    Some((depth, mark, title))
+}

@@ -1,0 +1,16 @@
+[package]
+name = "todoapp-store-mem"
+description = "tda in-memory store adapter (per-capability component maps) for tests + fast dev."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+todoapp-core.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+todoapp-app.workspace = true
+todoapp-conformance.workspace = true
+tokio.workspace = true

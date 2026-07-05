@@ -1,0 +1,30 @@
+# Default todoapp-tui general config. Copy to ~/.config/tda/config.toml (or
+# $TDA_CONFIG) and edit to retune.
+[columns]
+# "id" shows the shortest unique prefix (git/jj-style abbreviation), usable
+# to target a task from the future CLI.
+order = ["status", "due", "eta", "assignee", "estimate", "elapsed", "tags", "id"]
+
+[schedule]
+# Work calendar used to project the `eta` column: hours of capacity per work
+# day, and how many days per week (Mon-anchored) count as workdays.
+hours_per_day = 8.0
+days_per_week = 5
+
+[status]
+# Which statuses are usable and the order `space` cycles through them in.
+# Drop entries here to hide a status you never use ("draft" is excluded by
+# default; add it back, e.g. ["draft", "todo", "wip", "paused", "done"], if
+# you want the capture/refine stage).
+enabled = ["todo", "wip", "paused", "done"]
+# Symbol set for the animated `wip` spinner; see throbber-widgets-tui's
+# symbols module for the full list (ascii, braille_six, braille_eight, ...).
+spinner_set = "braille_eight"
+spinner_interval_ms = 100
+
+[status.glyphs]
+# Static icon per status; `wip` has none here — it's always spinner-driven.
+draft = "○"
+todo = "◇"
+paused = "⏸"
+done = "✔"

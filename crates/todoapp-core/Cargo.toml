@@ -1,0 +1,19 @@
+[package]
+name = "todoapp-core"
+description = "tda domain core: entities, capabilities, ports. No I/O deps (see spec §5)."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# todoapp-core MUST stay free of I/O / framework crates (enforced by `mise run lint`).
+# serde (derive) + derive_more are serialization/error helpers, not I/O — allowed.
+[dependencies]
+serde.workspace = true
+derive_more.workspace = true
+async-trait.workspace = true
+# jiff is a calendar/value library (like serde), not I/O/runtime — allowed (spec §5).
+jiff.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

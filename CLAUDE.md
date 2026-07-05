@@ -11,16 +11,16 @@ sections when explaining choices.
 
 ```
 crates/
-  tda-core/        # domain: model, capabilities, the decider, PORTS (traits). No I/O deps.
-  tda-app/         # use cases: async orchestration of core + ports
-  tda-store-mem/   # adapter: in-memory store (per-capability component maps), tests + dev
-  tda-store-turso/ # adapter: Turso/SQLite persistence (M2)
-  tda-conformance/ # shared conformance test suite (macro runs against both stores)
-  tda-tui/         # adapter: ratatui TUI binary `tda` (M4) — DB at ~/.local/share/tda/tda.db
+  todoapp-core/        # domain: model, capabilities, the decider, PORTS (traits). No I/O deps.
+  todoapp-app/         # use cases: async orchestration of core + ports
+  todoapp-store-mem/   # adapter: in-memory store (per-capability component maps), tests + dev
+  todoapp-store-turso/ # adapter: Turso/SQLite persistence (M2)
+  todoapp-conformance/ # shared conformance test suite (macro runs against both stores)
+  todoapp-tui/         # adapter: ratatui TUI binary `tda` (M4) — DB at ~/.local/share/tda/tda.db
 ```
-Later adapters (per §5): `tda-cli`, `tda-api`, `tda-mcp`, `tda-ui-core`.
+Later adapters (per §5): `todoapp-cli`, `todoapp-api`, `todoapp-mcp`, `todoapp-ui-core`.
 
-### tda-tui conventions (M4)
+### todoapp-tui conventions (M4)
 - `AppState` owns `TursoStore`; `make_svc(store, clock, ids)` builds `Services` from
   individual field references (field-level borrows, no `Box::leak`).
 - `build_visible_items(store, clock, ids, expanded)` is a free async fn for tree rebuild;
@@ -31,7 +31,7 @@ Later adapters (per §5): `tda-cli`, `tda-api`, `tda-mcp`, `tda-ui-core`.
 
 ## Inviolable: the dependency rule (§5)
 
-`adapters → app → core`. Nothing in `tda-core` may import an adapter, a runtime,
+`adapters → app → core`. Nothing in `todoapp-core` may import an adapter, a runtime,
 or a framework. Enforced by `mise run lint` (→ `lint:core-no-io`, a denylist
 grep over `cargo tree`). serde, derive_more, and async-trait are allowed in core
 (serialization / error / async-glue, not I/O).
@@ -43,7 +43,7 @@ grep over `cargo tree`). serde, derive_more, and async-trait are allowed in core
   then `apply<St: ComponentStore>(&St, &Id, &Event)` — **capability-keyed and
   async**: a guard `get`s only the components it inspects, `apply` `set`s only
   what changed. Gated by an ordered list of guards (first denial wins).
-  Graph-aware ops (move/link, cycle checks) live in `tda-app`. Extending = add a
+  Graph-aware ops (move/link, cycle checks) live in `todoapp-app`. Extending = add a
   `Component` type + its `Command`/`Event` variant + a guard + an `apply` arm.
 - **Async boundary (§5):** repository ports are `async` traits (`async-trait`,
   `?Send`), and use cases are `async`. `decide`/`apply` are async **over the

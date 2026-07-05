@@ -26,13 +26,13 @@ depends = ["lint:core-no-io"]
 run = "cargo --locked clippy --workspace --all-targets --all-features --no-deps -- -D warnings"
 
 [tasks."lint:core-no-io"]
-description = "enforce spec §5: tda-core has no I/O / framework deps"
+description = "enforce spec §5: todoapp-core has no I/O / framework deps"
 hide = true
-# ponytail: grep guard; switch to cargo-deny [bans] if tda-core's allowed deps grow.
+# ponytail: grep guard; switch to cargo-deny [bans] if todoapp-core's allowed deps grow.
 run = """
-cargo --locked tree -p tda-core --edges normal --prefix none \
+cargo --locked tree -p todoapp-core --edges normal --prefix none \
   | rg -iw 'tokio|turso|libsql|axum|clap|ratatui|crossterm|reqwest|hyper|rmcp|bevy_ecs' \
-  && { echo 'tda-core must not depend on I/O / framework crates (spec §5)'; exit 1; } || exit 0
+  && { echo 'todoapp-core must not depend on I/O / framework crates (spec §5)'; exit 1; } || exit 0
 """
 
 [tasks."lint:megalinter"]

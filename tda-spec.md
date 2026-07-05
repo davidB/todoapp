@@ -130,7 +130,7 @@ Grouped and given IDs so the roadmap can reference them.
 
 **[DECISION] Composition-first domain (capabilities-as-components), ECS as *inspiration*, not a dependency.** Composition is the modeling principle (see [§3](#3-core-concepts-glossary)): a minimal `Task` identity with capability components attached à la carte, mirrored by the table-per-capability storage in [§7](#7-data-model-turso-adapter). This is the good half of ECS — composition over inheritance — taken as a design pattern. We do **not** pull in an ECS engine (`bevy_ecs` or otherwise): no second in-memory `World` to sync against the durable store, no engine runtime in the core.
 
-- The in-memory store (`tda-store-mem`) is plain composed Rust — component maps keyed by `TaskId` (`HashMap<TaskId, Status>`, …), which is the ECS data shape without the framework. It sits behind the same repository ports as the Turso store, so it stays a swappable adapter.
+- The in-memory store (`todoapp-store-mem`) is plain composed Rust — component maps keyed by `TaskId` (`HashMap<TaskId, Status>`, …), which is the ECS data shape without the framework. It sits behind the same repository ports as the Turso store, so it stays a swappable adapter.
 - If a real need for ECS-style systems/queries ever appears, it can be added later as just another store adapter behind the ports — the composition model already leaves the door open, with nothing to undo.
 
 ### Workspace layout (Cargo workspace)
@@ -138,19 +138,19 @@ Grouped and given IDs so the roadmap can reference them.
 ```
 tda/
 ├─ crates/
-│  ├─ tda-core/        # domain: entities, value objects, services, PORTS (traits). No I/O deps.
-│  ├─ tda-app/         # use cases / application services orchestrating core + ports
-│  ├─ tda-store-turso/ # adapter: persistence via the `turso` crate (impls the repo ports)
-│  ├─ tda-store-mem/   # adapter: in-memory store, plain composed components (tests + fast dev)
-│  ├─ tda-cli/         # adapter: clap-based CLI binary
-│  ├─ tda-tui/         # adapter: ratatui TUI binary
-│  ├─ tda-api/         # adapter: axum HTTP+JSON server
-│  ├─ tda-mcp/         # adapter: MCP server for agents
-│  └─ tda-ui-core/     # shared presentation logic: keymaps, navigation state (TUI+GUI share)
+│  ├─ todoapp-core/        # domain: entities, value objects, services, PORTS (traits). No I/O deps.
+│  ├─ todoapp-app/         # use cases / application services orchestrating core + ports
+│  ├─ todoapp-store-turso/ # adapter: persistence via the `turso` crate (impls the repo ports)
+│  ├─ todoapp-store-mem/   # adapter: in-memory store, plain composed components (tests + fast dev)
+│  ├─ todoapp-cli/         # adapter: clap-based CLI binary
+│  ├─ todoapp-tui/         # adapter: ratatui TUI binary
+│  ├─ todoapp-api/         # adapter: axum HTTP+JSON server
+│  ├─ todoapp-mcp/         # adapter: MCP server for agents
+│  └─ todoapp-ui-core/     # shared presentation logic: keymaps, navigation state (TUI+GUI share)
 └─ Cargo.toml          # [workspace]
 ```
 
-`tda-core` and `tda-app` may be merged early if the boundary feels heavy; keep ports in `tda-core` regardless.
+`todoapp-core` and `todoapp-app` may be merged early if the boundary feels heavy; keep ports in `todoapp-core` regardless.
 
 ### Ports (traits the core defines, adapters implement)
 
@@ -163,12 +163,12 @@ tda/
 - `IdGenerator` — injected IDs (deterministic tests).
 - `BlobStore` — content-addressed byte storage for `Attachment` file/image content (`FR-29`); separate from `ComponentStore` since blobs aren't a per-task-capability row.
 
-Use cases (in `tda-app`) are the only callers of ports. Adapters never call each other.
+Use cases (in `todoapp-app`) are the only callers of ports. Adapters never call each other.
 
-**Async boundary.** The `turso` crate is async (tokio), so the **repository ports are `async` traits** and use cases are `async`. **[DECISION — supersedes the earlier "core stays sync & pure" call]** Because capabilities are read capability-keyed on demand (`ComponentStore`, above), `decide`/`apply` ([§5a](#5a-commands-the-decider-pattern)) are themselves **`async` and take the store**: a guard `get`s only the components it inspects, and `apply` `set`s only what changed — no assembled snapshot to fold. `QueryEngine`-style evaluation still hoists its async component loads before the sync sort. The **dependency rule is unaffected**: `ComponentStore` is a *port* defined in `tda-core`; adapters implement it, so the core still imports no runtime/adapter. (Cost accepted: more loads and a non-pure `decide`; negligible for a local tool — ECS engines do far more per frame.) The `tda-store-mem` adapter implements these async traits trivially.
+**Async boundary.** The `turso` crate is async (tokio), so the **repository ports are `async` traits** and use cases are `async`. **[DECISION — supersedes the earlier "core stays sync & pure" call]** Because capabilities are read capability-keyed on demand (`ComponentStore`, above), `decide`/`apply` ([§5a](#5a-commands-the-decider-pattern)) are themselves **`async` and take the store**: a guard `get`s only the components it inspects, and `apply` `set`s only what changed — no assembled snapshot to fold. `QueryEngine`-style evaluation still hoists its async component loads before the sync sort. The **dependency rule is unaffected**: `ComponentStore` is a *port* defined in `todoapp-core`; adapters implement it, so the core still imports no runtime/adapter. (Cost accepted: more loads and a non-pure `decide`; negligible for a local tool — ECS engines do far more per frame.) The `todoapp-store-mem` adapter implements these async traits trivially.
 
 ### Dependency rule
-`adapters → app → core`. Nothing in `core` imports an adapter or a concrete framework. Enforce with a workspace check (e.g. a CI grep / `cargo-deny`-style rule that `tda-core/Cargo.toml` has no I/O crates).
+`adapters → app → core`. Nothing in `core` imports an adapter or a concrete framework. Enforce with a workspace check (e.g. a CI grep / `cargo-deny`-style rule that `todoapp-core/Cargo.toml` has no I/O crates).
 
 ---
 
@@ -177,8 +177,8 @@ Use cases (in `tda-app`) are the only callers of ports. Adapters never call each
 All mutations flow through one small, pure shape — **decide then apply** — so that capabilities can veto commands and new behaviour is additive.
 
 ```rust
-// Capability-keyed. Async over the ComponentStore port (a tda-core trait — no
-// runtime/adapter in core). Lives in tda-core; orchestrated by tda-app.
+// Capability-keyed. Async over the ComponentStore port (a todoapp-core trait — no
+// runtime/adapter in core). Lives in todoapp-core; orchestrated by todoapp-app.
 async fn decide<St: ComponentStore>(store: &St, id: &Id, cmd: &Command, ctx: &DecideCtx)
     -> Result<Vec<Event>, Denied>;
 async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event);
@@ -222,7 +222,7 @@ Cost of the whole mechanism: one `Command` enum, one `Event` enum, two async fun
 
 The `blocks` DAG, the single-parent `child` tree, and per-view ordering are the load-bearing decisions; everything else is conventional.
 
-**Composition mapping — one table per capability.** The capabilities from [§3](#3-core-concepts-glossary) are stored the same way they compose in memory: a **minimal `task` entity** (id + timestamps) plus **one component table per capability**, keyed by `task_id`. **The presence of a row *is* the capability** — there is no "absent vs unknown" ambiguity, and add/remove = insert/delete. A new capability is a new table, touching nothing existing. List/tree views join only the components they render (`task ⋈ c_title ⋈ c_status`) and never load `c_notes`. The `tda-store-mem` component maps and these capability tables are two projections of the same component set (component map ⟷ component table) — the ECS-inspired shape, no engine required.
+**Composition mapping — one table per capability.** The capabilities from [§3](#3-core-concepts-glossary) are stored the same way they compose in memory: a **minimal `task` entity** (id + timestamps) plus **one component table per capability**, keyed by `task_id`. **The presence of a row *is* the capability** — there is no "absent vs unknown" ambiguity, and add/remove = insert/delete. A new capability is a new table, touching nothing existing. List/tree views join only the components they render (`task ⋈ c_title ⋈ c_status`) and never load `c_notes`. The `todoapp-store-mem` component maps and these capability tables are two projections of the same component set (component map ⟷ component table) — the ECS-inspired shape, no engine required.
 
 ```sql
 -- Actors: humans and agents
@@ -355,7 +355,7 @@ The `blocked` badge is informational by default. Whether it should *hard-deny* `
 
 ---
 
-## 9. CLI surface (sketch, for `tda-cli`)
+## 9. CLI surface (sketch, for `todoapp-cli`)
 
 A concrete starting surface so Claude Code has a target. Refine as you build.
 
@@ -393,48 +393,48 @@ Milestones are ordered, each with deliverables and acceptance criteria Claude Co
 ### M0 — Project skeleton
 - Cargo workspace with the crates from [§5](#workspace-layout-cargo-workspace) (empty `lib.rs`/`main.rs` stubs).
 - CI: `cargo build`, `cargo test`, `cargo clippy -D warnings`, `cargo fmt --check`.
-- Dependency-rule check: `tda-core` has no I/O deps.
+- Dependency-rule check: `todoapp-core` has no I/O deps.
 - **Done when:** `cargo test` runs (even if empty) green in CI; workspace compiles.
 
 ### M1 — Domain core (no adapters) — *the heart of your notes*
 - Entities/value objects: `Task` (identity) + capability components `Title`, `Status`, `Notes`, `Schedule`, `Estimate`, `TimeSpent`, `Tags`, `Assignment`; `Actor`, `Link`, `Collection`, fractional `Position`. Capabilities compose à la carte (see [§3](#3-core-concepts-glossary)).
 - Ports: the traits in [§5](#ports-traits-the-core-defines-adapters-implement) (incl. `QueryEngine`).
-- `tda-store-mem` in-memory adapter for tests.
+- `todoapp-store-mem` in-memory adapter for tests.
 - **Command machinery ([§5a](#5a-commands-the-decider-pattern)):** `Command` + `Event` enums and `decide`/`apply`, with per-capability guards (`Status` transitions, `Assignment` claim rules, `blocks` start-gate). Statically composed, no dynamic bus.
-- Use cases in `tda-app` (each = build command → `decide` → `apply` → persist via ports): create, batch-create, edit, move/reorder (subtree), link (with **cycle rejection**), tag, assign, claim, status transitions, aggregate subtree (per-capability roll-ups), **evaluate query (filter + sort, with breadcrumb paths) + built-in queries (`what-next`, `what-next-for`, `due-today`)**, export-to-{md,json}, import.
+- Use cases in `todoapp-app` (each = build command → `decide` → `apply` → persist via ports): create, batch-create, edit, move/reorder (subtree), link (with **cycle rejection**), tag, assign, claim, status transitions, aggregate subtree (per-capability roll-ups), **evaluate query (filter + sort, with breadcrumb paths) + built-in queries (`what-next`, `what-next-for`, `due-today`)**, export-to-{md,json}, import.
 - Tests: unit per command incl. **denial paths** (claim a draft, claim by non-assignee, start while blocked); `proptest` for tree/`blocks`-DAG invariants and ordering; query tests per predicate + sort; `insta` snapshots for export.
 - **Done when:** `FR-1`–`FR-17`, `FR-23`–`FR-25` provable against the in-memory store with no `turso`/UI/HTTP dependency anywhere in `core`/`app`.
 
 ### M2 — Persistence (Turso)
-- `tda-store-turso` implementing all (async) repo ports via the `turso` crate; versioned migrations matching [§7](#7-data-model-turso-adapter).
+- `todoapp-store-turso` implementing all (async) repo ports via the `turso` crate; versioned migrations matching [§7](#7-data-model-turso-adapter).
 - A test suite that runs the **same** use-case tests from M1 against the Turso store (port conformance suite).
 - **Done when:** every M1 use case passes against an on-disk Turso database; round-trip export→import is identity.
 
 ### M3 — Dogfood milestone (the self-hosting roadmap)
-- `tda-cli` exposing the [§9](#9-cli-surface-sketch-for-tda-cli) surface, backed by Turso, with `--json` everywhere.
+- `todoapp-cli` exposing the [§9](#9-cli-surface-sketch-for-todoapp-cli) surface, backed by Turso, with `--json` everywhere.
 - `tda import` ingests this very file (Markdown task list) into a tree; `tda export` reproduces it.
 - **Done when:** you can run `tda import tda-spec.md` and then manage these milestones inside `tda` itself. **This is the "working ToDoApp that can store the roadmap" you asked for.**
 
 ### M4 — TUI
-- `tda-ui-core`: keymap + navigation state model (shared with future GUI).
-- `tda-tui` (ratatui): tree/list views, expand/collapse, fuzzy find (`FR-15`), keyboard reorder & move (`FR-8`), breadcrumb rendering in non-default views (`FR-14`), batch capture (`FR-1`).
+- `todoapp-ui-core`: keymap + navigation state model (shared with future GUI).
+- `todoapp-tui` (ratatui): tree/list views, expand/collapse, fuzzy find (`FR-15`), keyboard reorder & move (`FR-8`), breadcrumb rendering in non-default views (`FR-14`), batch capture (`FR-1`).
 - **Done when:** full create→organize→refine→claim loop is doable keyboard-only.
 
 ### M5 — API + agents
-- `tda-api` (axum HTTP+JSON) over the use cases.
-- `tda-mcp` (rmcp) exposing read/claim/update/list-ready as agent tools (`FR-21`), so an assigned agent can pull context (`FR-12`) and work `ready` tasks.
+- `todoapp-api` (axum HTTP+JSON) over the use cases.
+- `todoapp-mcp` (rmcp) exposing read/claim/update/list-ready as agent tools (`FR-21`), so an assigned agent can pull context (`FR-12`) and work `ready` tasks.
 - **Done when:** an external agent can list ready tasks, read parent context, claim, and complete — end to end.
 
 ### M6 — Advanced & polish
 - Templates (`FR-3`), richer dependency/blocked views (`FR-6`), aggregation caching, saved views.
-- GUI (`FR-22`) reusing `tda-ui-core` keybindings. **[OPEN: framework — see §13.]**
+- GUI (`FR-22`) reusing `todoapp-ui-core` keybindings. **[OPEN: framework — see §13.]**
 
 ---
 
 ## 11. Testing strategy
 
 - **Core/app:** pure unit tests; deterministic via injected `Clock`/`IdGenerator`. Property tests for the two invariants that will bite hardest: DAG acyclicity and ordering correctness under inserts/moves.
-- **Port conformance suite:** one parametrized test set run against *both* `tda-store-mem` and `tda-store-turso`. Adding a new store later means just passing this suite.
+- **Port conformance suite:** one parametrized test set run against *both* `todoapp-store-mem` and `todoapp-store-turso`. Adding a new store later means just passing this suite.
 - **Snapshots (`insta`):** Markdown/JSON export — catches format regressions and proves round-trip.
 - **Adapters:** thin integration tests; keep logic out of adapters so there's little to test there.
 
@@ -463,4 +463,4 @@ These are *not* resolved by the decisions above — they need your input (Claude
 
 ## 14. First instruction to give Claude Code
 
-> Read `tda-spec.md`. Execute **M0** then **M1** only. Set up the Cargo workspace per §5, then implement the domain core and use cases per §3–§9 against an in-memory store, with the full test suite from §11. Do **not** add Turso, CLI, TUI, or HTTP yet. Treat the §5 dependency rule as inviolable: nothing in `tda-core`/`tda-app` may depend on an adapter or I/O crate. Stop after M1 with a green `cargo test` and a short summary of the use cases implemented.
+> Read `tda-spec.md`. Execute **M0** then **M1** only. Set up the Cargo workspace per §5, then implement the domain core and use cases per §3–§9 against an in-memory store, with the full test suite from §11. Do **not** add Turso, CLI, TUI, or HTTP yet. Treat the §5 dependency rule as inviolable: nothing in `todoapp-core`/`todoapp-app` may depend on an adapter or I/O crate. Stop after M1 with a green `cargo test` and a short summary of the use cases implemented.

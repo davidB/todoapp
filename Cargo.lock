@@ -3171,100 +3171,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
-name = "tda-app"
-version = "0.0.0"
-dependencies = [
- "derive_more",
- "jiff",
- "proptest",
- "serde",
- "serde_json",
- "tda-conformance",
- "tda-core",
- "tda-store-mem",
- "tokio",
-]
-
-[[package]]
-name = "tda-cli"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "jiff",
- "serde",
- "serde_json",
- "tda-app",
- "tda-core",
- "tda-store-turso",
- "tda-tui",
- "tokio",
- "ulid",
-]
-
-[[package]]
-name = "tda-conformance"
-version = "0.0.0"
-dependencies = [
- "tda-core",
-]
-
-[[package]]
-name = "tda-core"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "derive_more",
- "jiff",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "tda-store-mem"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "tda-app",
- "tda-conformance",
- "tda-core",
- "tokio",
-]
-
-[[package]]
-name = "tda-store-turso"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "serde_json",
- "tda-app",
- "tda-conformance",
- "tda-core",
- "tokio",
- "turso",
-]
-
-[[package]]
-name = "tda-tui"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "crossterm 0.28.1",
- "dirs",
- "jiff",
- "ratatui",
- "serde",
- "tda-app",
- "tda-core",
- "tda-store-turso",
- "throbber-widgets-tui",
- "tokio",
- "toml",
- "ulid",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3452,6 +3358,100 @@ dependencies = [
  "displaydoc",
  "serde_core",
  "zerovec",
+]
+
+[[package]]
+name = "todoapp-app"
+version = "0.0.0"
+dependencies = [
+ "derive_more",
+ "jiff",
+ "proptest",
+ "serde",
+ "serde_json",
+ "todoapp-conformance",
+ "todoapp-core",
+ "todoapp-store-mem",
+ "tokio",
+]
+
+[[package]]
+name = "todoapp-cli"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "jiff",
+ "serde",
+ "serde_json",
+ "todoapp-app",
+ "todoapp-core",
+ "todoapp-store-turso",
+ "todoapp-tui",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
+name = "todoapp-conformance"
+version = "0.0.0"
+dependencies = [
+ "todoapp-core",
+]
+
+[[package]]
+name = "todoapp-core"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "derive_more",
+ "jiff",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "todoapp-store-mem"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "todoapp-app",
+ "todoapp-conformance",
+ "todoapp-core",
+ "tokio",
+]
+
+[[package]]
+name = "todoapp-store-turso"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
+ "todoapp-app",
+ "todoapp-conformance",
+ "todoapp-core",
+ "tokio",
+ "turso",
+]
+
+[[package]]
+name = "todoapp-tui"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "crossterm 0.28.1",
+ "dirs",
+ "jiff",
+ "ratatui",
+ "serde",
+ "throbber-widgets-tui",
+ "todoapp-app",
+ "todoapp-core",
+ "todoapp-store-turso",
+ "tokio",
+ "toml",
+ "ulid",
 ]
 
 [[package]]
