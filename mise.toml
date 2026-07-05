@@ -6,6 +6,9 @@ experimental = true
 [tools]
 rust = { version = "1.96.0", profile = "minimal", components = "rustfmt,clippy" }
 "github:kucherenko/jscpd" = "latest"
+"github:release-plz/release-plz" = "latest"
+"github:orhun/git-cliff" = "latest"
+"github:axodotdev/cargo-dist" = "latest"
 
 [tasks."build"]
 description = "compile the workspace"
@@ -56,3 +59,7 @@ run = [
 description = "the full CI gate"
 depends = ["lint", "test"]
 run = "cargo --locked fmt --check"
+
+[tasks."release-pr"]
+description = "dry-run the release-plz version bump + changelog locally"
+run = "release-plz update"

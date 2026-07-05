@@ -7,6 +7,7 @@ edition = "2024"
 version = "0.0.0"
 license = "Apache-2.0"
 repository = "https://github.com/davidB/todoapp"
+publish = false
 
 [workspace.dependencies]
 todoapp-core = { path = "crates/todoapp-core" }
@@ -66,3 +67,8 @@ missing_docs = "allow"
 non_snake_case = "allow"
 unsafe_code = "deny"
 warnings = "deny"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

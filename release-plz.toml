@@ -1,0 +1,7 @@
+[workspace]
+changelog_update = true
+changelog_config = "cliff.toml"
+git_release_enable = false # cargo-dist creates the GitHub Release from the tag
+git_tag_enable = true
+git_tag_name = "{{ version }}"
+publish = false

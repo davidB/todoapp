@@ -3,6 +3,7 @@ name = "todoapp-core"
 description = "tda domain core: entities, capabilities, ports. No I/O deps (see spec §5)."
 edition.workspace = true
 version.workspace = true
+publish.workspace = true
 license.workspace = true
 repository.workspace = true
 

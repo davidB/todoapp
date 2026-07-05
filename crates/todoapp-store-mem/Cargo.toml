@@ -3,6 +3,7 @@ name = "todoapp-store-mem"
 description = "tda in-memory store adapter (per-capability component maps) for tests + fast dev."
 edition.workspace = true
 version.workspace = true
+publish.workspace = true
 license.workspace = true
 repository.workspace = true
 
