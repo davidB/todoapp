@@ -239,7 +239,7 @@ mod tests {
         let keymap = Keymap::load(None).expect("default keymap must parse");
         assert_eq!(
             keymap.lookup(KeyCode::Left, KeyModifiers::ALT),
-            Some(Action::ReparentIn)
+            Some(Action::ReparentOut)
         );
         assert_eq!(
             keymap.lookup(KeyCode::Up, KeyModifiers::ALT),
