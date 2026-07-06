@@ -4,8 +4,10 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+        Wrap,
     },
 };
 use todoapp_core::Status;
@@ -21,11 +23,20 @@ pub fn render(f: &mut Frame, app: &AppState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .areas(area);
 
-    // Draw the tree table behind any overlay.
-    render_tree(f, main, app);
-
-    if let View::List(hits) = &app.view {
-        render_list(f, main, app, hits);
+    if let View::Detail { title, notes } = &app.view {
+        // Tree keeps the top half so the cursor's context stays visible;
+        // the detail pane takes the bottom half rather than covering it.
+        let [tree_area, detail_area] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(main);
+        render_tree(f, tree_area, app);
+        render_detail(f, detail_area, title, notes);
+    } else {
+        render_tree(f, main, app);
+        if let View::List(hits) = &app.view {
+            render_list(f, main, app, hits);
+        }
     }
 
     render_status_bar(f, status_bar, app);
@@ -80,22 +91,26 @@ fn column_width(kind: ColumnKind) -> u16 {
 }
 
 fn item_row(item: &VisibleItem, columns: &[ColumnKind], app: &AppState) -> Row<'static> {
-    let tree_cell = Cell::from(tree_cell_text(item, app)).style(tree_status_style(item.status));
+    let tree_cell = Cell::from(tree_cell_line(item, app)).style(tree_status_style(item.status));
     let cells =
         std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c, app)));
     Row::new(cells)
 }
 
-fn tree_cell_text(item: &VisibleItem, app: &AppState) -> String {
+fn tree_cell_line(item: &VisibleItem, app: &AppState) -> Line<'static> {
     let indent = "  ".repeat(item.depth);
     let arrow = if item.has_children {
         if item.is_expanded { "▼ " } else { "▶ " }
     } else {
         "· "
     };
-    let badge = if item.is_blocked { " [!]" } else { "" };
     let icon = status_icon(item.status, app);
-    format!("{indent}{arrow}{icon} {}{badge}", item.title)
+    let mut spans = vec![Span::raw(format!("{indent}{arrow}{icon} "))];
+    spans.extend(crate::markdown::render_inline(&item.title));
+    if item.is_blocked {
+        spans.push(Span::raw(" [!]"));
+    }
+    Line::from(spans)
 }
 
 fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'static> {
@@ -156,8 +171,9 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
                 format!("[{}] ", hit.path.join(" › "))
             };
             let icon = status_icon(hit.task.status, app);
-            let content = format!("{breadcrumb}{icon} {}", hit.task.title);
-            ListItem::new(content).style(status_style(hit.task.status))
+            let mut spans = vec![Span::raw(format!("{breadcrumb}{icon} "))];
+            spans.extend(crate::markdown::render_inline(&hit.task.title));
+            ListItem::new(Line::from(spans)).style(status_style(hit.task.status))
         })
         .collect();
     let list = List::new(items)
@@ -171,6 +187,26 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
     let mut state = ListState::default().with_selected(Some(app.cursor));
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// Read-only rendered view of a task's title + notes (Markdown), opened by
+/// `Action::ViewDetail`. `q`/`esc` (the generic `Action::Quit` back-out)
+/// returns to the tree.
+fn render_detail(f: &mut Frame, area: Rect, title: &str, notes: &str) {
+    let mut text = crate::markdown::render(title);
+    if !notes.is_empty() {
+        text.lines.push(Line::raw(""));
+        text.lines.extend(crate::markdown::render(notes).lines);
+    }
+    let p = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" details (q/esc to close) "),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(Clear, area);
+    f.render_widget(p, area);
 }
 
 fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
@@ -228,8 +264,6 @@ fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, text: &str) {
 /// The multi-field task edit dialog: one line per field, the focused field
 /// gets a cursor and a highlight style (Tab/Shift+Tab cycles focus).
 fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::app::TaskEditForm) {
-    use ratatui::text::Line;
-
     let height = u16::try_from(crate::app::EDIT_FORM_LABELS.len() + 2).unwrap_or(u16::MAX);
     let popup = centered_rect(area, 60, height);
     let lines: Vec<Line> = crate::app::EDIT_FORM_LABELS

@@ -72,6 +72,7 @@ pub struct VisibleItem {
 pub enum View {
     Tree,
     List(Vec<QueryHit>),
+    Detail { title: String, notes: String },
     Help,
 }
 
@@ -313,6 +314,7 @@ impl AppState {
         match &self.view {
             View::Tree | View::Help => self.items.len(),
             View::List(hits) => hits.len(),
+            View::Detail { .. } => 0,
         }
     }
 
@@ -490,6 +492,18 @@ impl AppState {
                             ],
                             focus: 0,
                         });
+                    }
+                }
+            }
+            // View rendered title/notes (tree only)
+            Action::ViewDetail if in_tree => {
+                if let Some(id) = self.cursor_id() {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    if let Ok(snap) = svc.snapshot(&id).await {
+                        self.view = View::Detail {
+                            title: snap.title,
+                            notes: snap.notes.unwrap_or_default(),
+                        };
                     }
                 }
             }

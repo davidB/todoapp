@@ -17,6 +17,7 @@ dirs = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 throbber-widgets-tui = { version = "0.11", default-features = false }
+tui-markdown = { version = "0.3.8", default-features = false }
 tokio = { workspace = true }
 toml = { workspace = true }
 ulid = { workspace = true }

@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod human_duration;
 mod keymap;
+mod markdown;
 mod schedule;
 mod ui;
 

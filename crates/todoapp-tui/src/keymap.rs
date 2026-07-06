@@ -22,6 +22,7 @@ pub enum Action {
     AddSibling,
     AddRoot,
     EditTitle,
+    ViewDetail,
     CycleStatus,
     Claim,
     ReorderUp,
@@ -47,6 +48,11 @@ impl Action {
         ("add_sibling", Action::AddSibling, "add sibling of cursor"),
         ("add_root", Action::AddRoot, "add root task"),
         ("edit_title", Action::EditTitle, "edit task"),
+        (
+            "view_detail",
+            Action::ViewDetail,
+            "view title/notes (rendered)",
+        ),
         (
             "cycle_status",
             Action::CycleStatus,
