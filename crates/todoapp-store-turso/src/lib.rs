@@ -7,9 +7,6 @@
 //! ports otherwise pay); the tree-priority sort + breadcrumbs stay link-walks in
 //! `todoapp-app`. Push the sort into a recursive CTE only if it shows up hot.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use async_trait::async_trait;
 use todoapp_core::{
     BlobStore, Collection, CollectionKind, CollectionRepository, Component, ComponentStore, Date,
@@ -17,15 +14,6 @@ use todoapp_core::{
     TaskEntityStore, Timestamp,
 };
 use turso::Value;
-
-/// Content-addressed id: same bytes ⇒ same id (cheap incidental dedup, not a
-/// content-hash identity guarantee — collisions are possible but not a
-/// practical concern at this scale).
-fn blob_id(bytes: &[u8]) -> Id {
-    let mut h = DefaultHasher::new();
-    bytes.hash(&mut h);
-    Id::new(format!("blob_{:016x}", h.finish()))
-}
 
 /// Schema migrations, applied in order; `PRAGMA user_version` tracks how many ran
 /// (spec §6: versioned from M2). Add the next migration as a new array element.
@@ -860,7 +848,7 @@ impl QueryEngine for TursoStore {
 #[async_trait(?Send)]
 impl BlobStore for TursoStore {
     async fn put(&self, bytes: Vec<u8>) -> Id {
-        let id = blob_id(&bytes);
+        let id = Id::for_blob(&bytes);
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO blob(id,content,created_at) VALUES (?,?,?)",

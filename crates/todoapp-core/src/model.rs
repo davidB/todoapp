@@ -35,6 +35,17 @@ impl Id {
     pub fn is_root(&self) -> bool {
         self.0 == "__root__"
     }
+    /// Content-addressed id for a blob: same bytes ⇒ same id (cheap incidental
+    /// dedup, not a content-hash identity guarantee — collisions are possible
+    /// but not a practical concern at this scale). Shared by every `BlobStore`
+    /// adapter so they agree on ids for the same bytes.
+    pub fn for_blob(bytes: &[u8]) -> Self {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        bytes.hash(&mut h);
+        Self(format!("blob_{:016x}", h.finish()))
+    }
 }
 
 impl fmt::Display for Id {

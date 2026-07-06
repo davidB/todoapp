@@ -3812,16 +3812,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "dirs",
- "jiff",
  "serde",
  "serde_json",
  "todoapp-app",
  "todoapp-core",
- "todoapp-store-turso",
  "todoapp-tui",
  "tokio",
- "ulid",
 ]
 
 [[package]]

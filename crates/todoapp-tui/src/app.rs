@@ -175,7 +175,7 @@ pub struct AppState {
 
 /// Build a `Services` bundle from individual field references so the borrow
 /// checker can see exactly which fields are in use (field-level disjoint borrows).
-fn make_svc<'a>(
+pub fn make_svc<'a>(
     store: &'a TursoStore,
     clock: &'a SystemClock,
     ids: &'a UlidGen,
@@ -230,6 +230,10 @@ async fn build_visible_items(
             Some(due) => (due.date.max(projected), projected > due.date),
             None => (projected, false),
         });
+        // jscpd:ignore-start
+        // ponytail: `tags.iter().cloned().collect::<Vec<_>>().join(", ")` also
+        // appears in `handle_event`'s edit-form setup below; only 2 occurrences
+        // of a 1-line idiom, not worth a helper. Revisit if a 3rd shows up.
         let assignees = agg
             .assignees
             .iter()
@@ -237,6 +241,7 @@ async fn build_visible_items(
             .collect::<Vec<_>>()
             .join(", ");
         let tags = snap.tags.iter().cloned().collect::<Vec<_>>().join(", ");
+        // jscpd:ignore-end
 
         items.push(VisibleItem {
             id: id.clone(),
@@ -1105,7 +1110,7 @@ impl AppState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn assignment(actor: &str) -> Assignment {
@@ -1125,7 +1130,7 @@ mod tests {
         press(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    async fn new_app() -> AppState {
+    pub(crate) async fn new_app() -> AppState {
         AppState::new(
             TursoStore::open_memory().await,
             Keymap::load(None).unwrap(),
@@ -1227,13 +1232,7 @@ mod tests {
     /// single-line. Saving with Alt+Enter persists the multi-line notes.
     #[tokio::test]
     async fn edit_form_notes_field_is_multiline_and_saves() {
-        let mut app = new_app().await;
-        let task_id = {
-            let svc = make_svc(&app.store, &app.clock, &app.ids);
-            svc.create("Task", None, Status::Todo, []).await.unwrap().id
-        };
-        app.rebuild().await;
-        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        let (mut app, task_id) = new_app_with_task().await;
 
         app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap(); // edit_title
         assert!(app.edit_form.is_some());
@@ -1262,12 +1261,7 @@ mod tests {
             assert_eq!(form.fields[NOTES_FIELD].cursor(), 8);
         }
 
-        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
-            .await
-            .unwrap();
-        assert!(app.edit_form.is_none());
-        let svc = make_svc(&app.store, &app.clock, &app.ids);
-        let snap = svc.snapshot(&task_id).await.unwrap();
+        let snap = save_edit_form(&mut app, &task_id).await;
         assert_eq!(snap.notes.as_deref(), Some("line one\nline two"));
     }
 
@@ -1276,13 +1270,7 @@ mod tests {
     /// re-saved with those newlines intact.
     #[tokio::test]
     async fn edit_form_title_field_is_multiline_and_saves() {
-        let mut app = new_app().await;
-        let task_id = {
-            let svc = make_svc(&app.store, &app.clock, &app.ids);
-            svc.create("Task", None, Status::Todo, []).await.unwrap().id
-        };
-        app.rebuild().await;
-        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        let (mut app, task_id) = new_app_with_task().await;
 
         app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
         assert_eq!(app.edit_form.as_ref().unwrap().focus, TITLE_FIELD);
@@ -1304,12 +1292,7 @@ mod tests {
             "Title one\nTitle two"
         );
 
-        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
-            .await
-            .unwrap();
-        assert!(app.edit_form.is_none());
-        let svc = make_svc(&app.store, &app.clock, &app.ids);
-        let snap = svc.snapshot(&task_id).await.unwrap();
+        let snap = save_edit_form(&mut app, &task_id).await;
         assert_eq!(snap.title, "Title one\nTitle two");
     }
 
@@ -1317,21 +1300,10 @@ mod tests {
     /// its displayed value.
     #[tokio::test]
     async fn edit_form_id_field_is_read_only() {
-        let mut app = new_app().await;
-        let task_id = {
-            let svc = make_svc(&app.store, &app.clock, &app.ids);
-            svc.create("Task", None, Status::Todo, []).await.unwrap().id
-        };
-        app.rebuild().await;
-        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        let (mut app, _task_id) = new_app_with_task().await;
         app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
 
-        for _ in 0..ID_FIELD {
-            app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
-                .await
-                .unwrap();
-        }
-        assert_eq!(app.edit_form.as_ref().unwrap().focus, ID_FIELD);
+        tab_to_id_field(&mut app).await;
         let before = app.edit_form.as_ref().unwrap().fields[ID_FIELD]
             .value()
             .to_string();
@@ -1349,13 +1321,7 @@ mod tests {
     /// they mean "move the caret" within the notes field.
     #[tokio::test]
     async fn edit_form_up_down_do_not_change_focus_outside_notes() {
-        let mut app = new_app().await;
-        let task_id = {
-            let svc = make_svc(&app.store, &app.clock, &app.ids);
-            svc.create("Task", None, Status::Todo, []).await.unwrap().id
-        };
-        app.rebuild().await;
-        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        let (mut app, _task_id) = new_app_with_task().await;
         app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
         assert_eq!(app.edit_form.as_ref().unwrap().focus, 0);
 
@@ -1376,6 +1342,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.edit_form.as_ref().unwrap().focus, 0);
+    }
+
+    /// Tabs forward to the read-only id field of the open edit form.
+    async fn tab_to_id_field(app: &mut AppState) {
+        for _ in 0..ID_FIELD {
+            app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, ID_FIELD);
+    }
+
+    /// Saves the open edit form (Alt+Enter) and returns the task's snapshot.
+    async fn save_edit_form(app: &mut AppState, task_id: &Id) -> todoapp_app::TaskSnapshot {
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.edit_form.is_none());
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        svc.snapshot(task_id).await.unwrap()
+    }
+
+    /// Creates a plain "Task", rebuilds the tree, and positions the cursor on it.
+    async fn new_app_with_task() -> (AppState, Id) {
+        let mut app = new_app().await;
+        let task_id = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.create("Task", None, Status::Todo, []).await.unwrap().id
+        };
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        (app, task_id)
     }
 
     async fn create_task_titled(app: &mut AppState, title: &str) {
@@ -1436,22 +1434,11 @@ mod tests {
 
     #[tokio::test]
     async fn ctrl_v_paste_is_blocked_on_id_field_but_works_on_title_field() {
-        let mut app = new_app().await;
-        let task_id = {
-            let svc = make_svc(&app.store, &app.clock, &app.ids);
-            svc.create("Task", None, Status::Todo, []).await.unwrap().id
-        };
-        app.rebuild().await;
-        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        let (mut app, _task_id) = new_app_with_task().await;
         app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
         app.clipboard.set_text("pasted".to_string()).unwrap();
 
-        for _ in 0..ID_FIELD {
-            app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
-                .await
-                .unwrap();
-        }
-        assert_eq!(app.edit_form.as_ref().unwrap().focus, ID_FIELD);
+        tab_to_id_field(&mut app).await;
         let before = app.edit_form.as_ref().unwrap().fields[ID_FIELD]
             .value()
             .to_string();

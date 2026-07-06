@@ -8,68 +8,28 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use todoapp_app::{Anchor, Services, TaskSnapshot};
 use todoapp_core::{
-    Clock, Date, Dir, Due, DueFilter, Filter, Id, IdGenerator, Query, SortField, SortKey, Status,
-    Timestamp,
+    ComponentStore, Dir, Due, DueFilter, Filter, Id, Query, SortField, SortKey, Status,
+    TaskEntityStore,
 };
-use todoapp_store_turso::TursoStore;
-use ulid::Ulid;
-
-// ---- Clock & IdGenerator (same impls as todoapp-tui) ----------------------------
-
-struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> Timestamp {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        #[allow(clippy::cast_possible_truncation)]
-        Timestamp::from_millisecond(ms as i64)
-    }
-    fn today(&self) -> Date {
-        Date(jiff::Zoned::now().date())
-    }
-}
-
-struct UlidGen;
-
-impl IdGenerator for UlidGen {
-    fn next_id(&self) -> Id {
-        Id::new(Ulid::new().to_string().to_lowercase())
-    }
-}
-
-// ---- Store init (same pattern as todoapp-tui) -----------------------------------
-
-fn db_path() -> PathBuf {
-    std::env::var("TDA_DB").map_or_else(
-        |_| {
-            dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("tda/tda.db")
-        },
-        PathBuf::from,
-    )
-}
-
-fn make_svc<'a>(
-    store: &'a TursoStore,
-    clock: &'a SystemClock,
-    ids: &'a UlidGen,
-) -> Services<'a, TursoStore> {
-    Services {
-        store,
-        links: store,
-        collections: store,
-        query: store,
-        clock,
-        ids,
-        blobs: store,
-    }
-}
+use todoapp_tui::{SystemClock, UlidGen, make_svc};
 
 // ---- Output helpers ----------------------------------------------------------
+
+/// Resolves `Ls`'s optional `id` arg: that task's direct children, or all roots if omitted.
+async fn children_of_or_roots<St: ComponentStore + TaskEntityStore>(
+    svc: &Services<'_, St>,
+    id: Option<String>,
+) -> Vec<Id> {
+    match id {
+        Some(s) => svc
+            .children_of(&Id::new(s))
+            .await
+            .into_iter()
+            .map(|l| l.to)
+            .collect(),
+        None => svc.roots().await,
+    }
+}
 
 fn print_json(v: &impl Serialize) -> anyhow::Result<()> {
     writeln!(io::stdout(), "{}", serde_json::to_string_pretty(v)?)?;
@@ -282,12 +242,7 @@ async fn main() -> anyhow::Result<()> {
         return todoapp_tui::run().await;
     }
 
-    let path = db_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("create db directory")?;
-    }
-    let path_str = path.to_str().context("non-UTF-8 db path")?;
-    let store = TursoStore::open(path_str).await.context("open database")?;
+    let store = todoapp_tui::open_store().await?;
     let clock = SystemClock;
     let ids = UlidGen;
     let svc = make_svc(&store, &clock, &ids);
@@ -317,15 +272,7 @@ async fn main() -> anyhow::Result<()> {
 
         Cmd::Ls { id, tree } => {
             if tree {
-                let root_ids: Vec<Id> = match id {
-                    Some(s) => svc
-                        .children_of(&Id::new(s))
-                        .await
-                        .into_iter()
-                        .map(|l| l.to)
-                        .collect(),
-                    None => svc.roots().await,
-                };
+                let root_ids = children_of_or_roots(&svc, id).await;
                 let mut lines: Vec<TreeLine> = Vec::new();
                 let mut stack: Vec<(Id, usize)> = root_ids.into_iter().map(|id| (id, 0)).collect();
                 stack.reverse();
@@ -345,15 +292,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 print_json(&lines)?;
             } else {
-                let ids: Vec<Id> = match id {
-                    Some(s) => svc
-                        .children_of(&Id::new(s))
-                        .await
-                        .into_iter()
-                        .map(|l| l.to)
-                        .collect(),
-                    None => svc.roots().await,
-                };
+                let ids = children_of_or_roots(&svc, id).await;
                 let mut tasks: Vec<TaskSnapshot> = Vec::new();
                 for id in ids {
                     if let Ok(t) = svc.snapshot(&id).await {

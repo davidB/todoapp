@@ -80,6 +80,11 @@ impl fmt::Display for Time {
     }
 }
 
+// jscpd:ignore-start
+// ponytail: same 7-line Serialize/Deserialize-via-Display/parse shape as `Due`
+// below; only 2 occurrences and each is tied to its own type's `Display`/
+// `parse`, so a macro would cost more readability than the duplication does.
+// Promote to a macro if a third string-roundtrip type shows up.
 impl Serialize for Time {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.to_string())
@@ -92,6 +97,7 @@ impl<'de> Deserialize<'de> for Time {
         Time::parse(&s).map_err(serde::de::Error::custom)
     }
 }
+// jscpd:ignore-end
 
 /// A due date with an optional time-of-day (spec: a "rendez-vous" due can
 /// carry a time; overdue/eta rollups (`Aggregate::earliest_due`,
@@ -132,6 +138,8 @@ impl fmt::Display for Due {
     }
 }
 
+// jscpd:ignore-start
+// ponytail: same shape as `Time` above — see the note there.
 impl Serialize for Due {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.to_string())
@@ -144,6 +152,7 @@ impl<'de> Deserialize<'de> for Due {
         Due::parse(&s).map_err(serde::de::Error::custom)
     }
 }
+// jscpd:ignore-end
 
 /// An effort/elapsed duration (`Estimate`, `TimeSpent`), minute precision.
 /// Serializes as an integer number of minutes — the same shape the field had

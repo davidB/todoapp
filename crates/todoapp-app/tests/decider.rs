@@ -20,6 +20,15 @@ async fn task(status: Status) -> (MemStore, Id) {
     (store, id)
 }
 
+/// Decides `cmd` and applies the resulting events, as tests always do
+/// immediately after a successful `decide`.
+async fn decide_and_apply(store: &MemStore, id: &Id, cmd: &Command, ctx: &DecideCtx) {
+    let ev = decide(store, id, cmd, ctx).await.unwrap();
+    for e in &ev {
+        apply(store, id, e).await;
+    }
+}
+
 #[tokio::test]
 async fn status_transitions_are_unrestricted() {
     let (store, id) = task(Status::Draft).await;
@@ -73,12 +82,7 @@ async fn claim_restricted_to_assignees() {
             .is_err()
     );
     // alice may, and claiming sets wip + claimed
-    let ev = decide(&store, &id, &Command::Claim(Id::new("alice")), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::Claim(Id::new("alice")), &ctx).await;
     assert_eq!(store.get::<Status>(&id).await, Some(Status::Wip));
     assert!(store.get::<Assignments>(&id).await.unwrap().0[0].claimed);
 }
@@ -102,17 +106,13 @@ async fn cannot_start_while_blocked() {
 #[tokio::test]
 async fn claim_with_no_assignees_adds_claimer() {
     let (store, id) = task(Status::Todo).await;
-    let ev = decide(
+    decide_and_apply(
         &store,
         &id,
         &Command::Claim(Id::new("solo")),
         &DecideCtx::default(),
     )
-    .await
-    .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    .await;
     let asg = store.get::<Assignments>(&id).await.unwrap();
     assert_eq!(asg.0.len(), 1);
     assert!(asg.0[0].claimed);
@@ -137,12 +137,7 @@ async fn completing_a_recurring_task_resets_it_instead_of_staying_done() {
         .await;
 
     let ctx = DecideCtx::default();
-    let ev = decide(&store, &id, &Command::SetStatus(Status::Done), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::SetStatus(Status::Done), &ctx).await;
 
     // 2026-07-01 is a Wednesday, so the next Wednesday is 2026-07-08.
     assert_eq!(store.get::<Status>(&id).await, Some(Status::Todo));
@@ -156,12 +151,7 @@ async fn completing_a_recurring_task_resets_it_instead_of_staying_done() {
 async fn completing_a_non_recurring_task_stays_done() {
     let (store, id) = task(Status::Todo).await;
     let ctx = DecideCtx::default();
-    let ev = decide(&store, &id, &Command::SetStatus(Status::Done), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::SetStatus(Status::Done), &ctx).await;
     assert_eq!(store.get::<Status>(&id).await, Some(Status::Done));
 }
 
@@ -174,25 +164,16 @@ async fn issue_ref_set_and_cleared() {
         id: "25".into(),
         url: None,
     };
-    let ev = decide(
+    decide_and_apply(
         &store,
         &id,
         &Command::SetIssueRef(Some(issue_ref.clone())),
         &ctx,
     )
-    .await
-    .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    .await;
     assert_eq!(store.get::<IssueRef>(&id).await, Some(issue_ref));
 
-    let ev = decide(&store, &id, &Command::SetIssueRef(None), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::SetIssueRef(None), &ctx).await;
     assert_eq!(store.get::<IssueRef>(&id).await, None);
 }
 
@@ -210,12 +191,7 @@ async fn time_log_recomputes_cumulative_time_spent() {
             Duration::from_minutes(45),
         ),
     ]);
-    let ev = decide(&store, &id, &Command::SetTimeLog(map.clone()), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::SetTimeLog(map.clone()), &ctx).await;
     assert_eq!(store.get::<TimeLog>(&id).await.map(|t| t.0), Some(map));
     assert_eq!(
         store.get::<TimeSpent>(&id).await.map(|t| t.0),
@@ -223,17 +199,13 @@ async fn time_log_recomputes_cumulative_time_spent() {
     );
 
     // clearing the log also clears the derived total
-    let ev = decide(
+    decide_and_apply(
         &store,
         &id,
         &Command::SetTimeLog(std::collections::BTreeMap::new()),
         &ctx,
     )
-    .await
-    .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    .await;
     assert_eq!(store.get::<TimeLog>(&id).await, None);
     assert_eq!(store.get::<TimeSpent>(&id).await, None);
 }
@@ -242,22 +214,12 @@ async fn time_log_recomputes_cumulative_time_spent() {
 async fn archived_is_orthogonal_to_status() {
     let (store, id) = task(Status::Done).await;
     let ctx = DecideCtx::default();
-    let ev = decide(&store, &id, &Command::SetArchived(true), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::SetArchived(true), &ctx).await;
     assert!(store.get::<Archived>(&id).await.is_some());
     // archiving doesn't touch status
     assert_eq!(store.get::<Status>(&id).await, Some(Status::Done));
 
-    let ev = decide(&store, &id, &Command::SetArchived(false), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::SetArchived(false), &ctx).await;
     assert!(store.get::<Archived>(&id).await.is_none());
 }
 
@@ -273,22 +235,12 @@ async fn attachments_add_and_remove() {
         blob: None,
         mime: None,
     };
-    let ev = decide(&store, &id, &Command::AddAttachment(att.clone()), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::AddAttachment(att.clone()), &ctx).await;
     assert_eq!(
         store.get::<Attachments>(&id).await.map(|a| a.0),
         Some(vec![att])
     );
 
-    let ev = decide(&store, &id, &Command::RemoveAttachment(Id::new("a1")), &ctx)
-        .await
-        .unwrap();
-    for e in &ev {
-        apply(&store, &id, e).await;
-    }
+    decide_and_apply(&store, &id, &Command::RemoveAttachment(Id::new("a1")), &ctx).await;
     assert_eq!(store.get::<Attachments>(&id).await, None);
 }

@@ -524,35 +524,25 @@ fn status_style(s: Status) -> Style {
 mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use todoapp_app::Services;
     use todoapp_core::{Date, Duration, Id, Status};
-    use todoapp_store_turso::TursoStore;
 
     use super::*;
-    use crate::app::AppState;
-    use crate::config::Config;
-    use crate::keymap::Keymap;
+    use crate::app::make_svc;
+    use crate::app::tests::new_app as new_test_app;
+
+    /// Renders `app` to a 130x10 test buffer.
+    fn render_to_buffer(app: &AppState) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(130, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
 
     #[tokio::test]
     async fn tree_table_renders_configured_columns_with_eta_overrun_in_red() {
-        let mut app = AppState::new(
-            TursoStore::open_memory().await,
-            Keymap::load(None).unwrap(),
-            Config::load(None).unwrap(),
-            Box::new(crate::clipboard::FakeClipboard::default()),
-        )
-        .await
-        .unwrap();
+        let mut app = new_test_app().await;
 
-        let svc = Services {
-            store: &app.store,
-            links: &app.store,
-            collections: &app.store,
-            query: &app.store,
-            clock: &app.clock,
-            ids: &app.ids,
-            blobs: &app.store,
-        };
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
         let root = svc.create("Root", None, Status::Todo, []).await.unwrap();
         svc.set_estimate(&root.id, Some(Duration::from_minutes(5 * 480)))
             .await
@@ -568,12 +558,8 @@ mod tests {
         app.rebuild().await;
         app.cursor = app.items.iter().position(|i| i.title == "Other").unwrap();
 
-        let backend = TestBackend::new(130, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(f, &app)).unwrap();
-        let rendered = terminal
-            .backend()
-            .buffer()
+        let buf = render_to_buffer(&app);
+        let rendered = buf
             .content
             .iter()
             .map(ratatui::buffer::Cell::symbol)
@@ -587,7 +573,6 @@ mod tests {
         assert!(rendered.contains("2020-01-01"));
 
         // The eta column cell must be styled red (projection overruns the due date).
-        let buf = terminal.backend().buffer();
         let has_red_cell =
             (0..buf.area.width).any(|x| (0..buf.area.height).any(|y| buf[(x, y)].fg == Color::Red));
         assert!(
@@ -598,24 +583,9 @@ mod tests {
 
     #[tokio::test]
     async fn select_mode_highlights_the_selected_range_with_reversed_style() {
-        let mut app = AppState::new(
-            TursoStore::open_memory().await,
-            Keymap::load(None).unwrap(),
-            Config::load(None).unwrap(),
-            Box::new(crate::clipboard::FakeClipboard::default()),
-        )
-        .await
-        .unwrap();
+        let mut app = new_test_app().await;
 
-        let svc = Services {
-            store: &app.store,
-            links: &app.store,
-            collections: &app.store,
-            query: &app.store,
-            clock: &app.clock,
-            ids: &app.ids,
-            blobs: &app.store,
-        };
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
         svc.create("Hello world", None, Status::Todo, [])
             .await
             .unwrap();
@@ -626,11 +596,7 @@ mod tests {
             cursor: 4,
         });
 
-        let backend = TestBackend::new(130, 10);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(f, &app)).unwrap();
-
-        let buf = terminal.backend().buffer();
+        let buf = render_to_buffer(&app);
         let has_reversed_cell = (0..buf.area.width).any(|x| {
             (0..buf.area.height).any(|y| buf[(x, y)].modifier.contains(Modifier::REVERSED))
         });

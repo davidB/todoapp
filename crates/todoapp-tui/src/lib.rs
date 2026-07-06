@@ -16,11 +16,13 @@ use anyhow::Context as _;
 use todoapp_store_turso::TursoStore;
 
 use crate::app::AppState;
+pub use crate::app::{SystemClock, UlidGen, make_svc};
 use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Config;
 use crate::keymap::Keymap;
 
-fn db_path() -> PathBuf {
+/// Same DB path resolution used by `todoapp-cli` (`$TDA_DB`, else the OS data dir).
+pub fn db_path() -> PathBuf {
     std::env::var("TDA_DB").map_or_else(
         |_| {
             dirs::data_dir()
@@ -63,13 +65,19 @@ fn load_config() -> anyhow::Result<Config> {
     Config::load(user_toml.as_deref())
 }
 
-pub async fn run() -> anyhow::Result<()> {
+/// Opens the `TursoStore` at [`db_path`], creating its parent directory if needed.
+/// Shared by `todoapp-cli`, which opens the same store for its non-TUI commands.
+pub async fn open_store() -> anyhow::Result<TursoStore> {
     let path = db_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create db directory")?;
     }
     let path_str = path.to_str().context("non-UTF-8 db path")?;
-    let store = TursoStore::open(path_str).await.context("open database")?;
+    TursoStore::open(path_str).await.context("open database")
+}
+
+pub async fn run() -> anyhow::Result<()> {
+    let store = open_store().await?;
     let keymap = load_keymap().context("load keybindings")?;
     let config = load_config().context("load config")?;
 
