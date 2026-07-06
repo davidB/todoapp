@@ -107,28 +107,29 @@ fn process_spans<'a>(spans: &[Span<'a>]) -> Vec<Span<'a>> {
     linkify_bare_urls(collapse_link_parens(spans))
 }
 
-/// Full multi-line render, for the detail pane.
-pub fn render(input: &str) -> Text<'_> {
-    // ponytail: reparse every frame, no caching; add a per-task cache if this
-    // shows up as measurable render lag.
-    let mut text = tui_markdown::from_str(input);
-    text.lines.retain(|l| !is_code_fence_line(l));
-    for line in &mut text.lines {
-        line.spans = process_spans(&line.spans);
-    }
-    text
+/// `CommonMark` treats a lone `\n` as a "soft break" (rendered as a space) and
+/// only a trailing-double-space or a blank line as a real line break — but a
+/// user who typed Enter in the TUI (title or notes) expects that newline to
+/// show up as one, with no Markdown escaping knowledge required. Force every
+/// typed newline to be a hard break by giving it a two-space prefix; a line
+/// of just two spaces is still blank per `CommonMark`, so `\n\n` paragraph
+/// breaks are unaffected. ponytail: this also pads lines inside fenced code
+/// blocks with trailing spaces — invisible in practice, not worth a
+/// code-fence-aware exception.
+fn hard_break_newlines(input: &str) -> String {
+    input.replace('\n', "  \n")
 }
 
-/// Inline render for a single-line field (tree/list row title): take just
-/// the first parsed line's spans, owned so callers can build `'static`
-/// `Row`/`Cell`/`ListItem` values from them. Titles are single-line input, so
-/// block elements (lists/code blocks) never apply here.
-pub fn render_inline(input: &str) -> Vec<Span<'static>> {
-    let mut lines = tui_markdown::from_str(input).lines;
-    lines.retain(|l| !is_code_fence_line(l));
-    lines
+/// Full multi-line render, for the detail pane. Owned (`'static`) since the
+/// parse happens over a locally-built hard-break-expanded copy of `input`,
+/// not `input` itself.
+pub fn render(input: &str) -> Text<'static> {
+    // ponytail: reparse every frame, no caching; add a per-task cache if this
+    // shows up as measurable render lag.
+    let lines: Vec<Line<'static>> = tui_markdown::from_str(&hard_break_newlines(input))
+        .lines
         .into_iter()
-        .next()
+        .filter(|l| !is_code_fence_line(l))
         .map(|line| {
             let owned: Vec<Span<'static>> = line
                 .spans
@@ -138,9 +139,71 @@ pub fn render_inline(input: &str) -> Vec<Span<'static>> {
                     content: Cow::Owned(s.content.into_owned()),
                 })
                 .collect();
-            process_spans(&owned)
+            Line::from(process_spans(&owned))
         })
-        .unwrap_or_default()
+        .collect();
+    Text::from(lines)
+}
+
+/// Truncate `spans` to at most `max_width` chars total, replacing anything
+/// cut off (or already hidden, per `force_ellipsis`) with a trailing `...`
+/// so a reader always knows there's more rather than seeing a silently
+/// clipped or dropped title.
+fn truncate_with_ellipsis(
+    spans: Vec<Span<'static>>,
+    max_width: usize,
+    force_ellipsis: bool,
+) -> Vec<Span<'static>> {
+    let total_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if !force_ellipsis && total_len <= max_width {
+        return spans;
+    }
+    let budget = max_width.saturating_sub(3); // room for "..."
+    let mut out = Vec::with_capacity(spans.len() + 1);
+    let mut remaining = budget;
+    for span in spans {
+        if remaining == 0 {
+            break;
+        }
+        let taken: String = span.content.chars().take(remaining).collect();
+        remaining -= taken.chars().count();
+        if !taken.is_empty() {
+            out.push(Span {
+                style: span.style,
+                content: Cow::Owned(taken),
+            });
+        }
+    }
+    out.push(Span::raw("..."));
+    out
+}
+
+/// Inline render for a tree/list row title: only the first line (a tree row
+/// or list row is one line — additional lines would break the layout), with
+/// a trailing `...` whenever content is hidden, either because the title has
+/// more lines or its first line alone doesn't fit in `max_width` chars.
+pub fn render_inline(input: &str, max_width: usize) -> Vec<Span<'static>> {
+    let mut rest = input.splitn(2, '\n');
+    let first_line = rest.next().unwrap_or_default();
+    let has_more_lines = rest.next().is_some();
+
+    let mut lines = tui_markdown::from_str(first_line).lines;
+    lines.retain(|l| !is_code_fence_line(l));
+    let owned: Vec<Span<'static>> = lines
+        .into_iter()
+        .next()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|s| Span {
+                    style: s.style,
+                    content: Cow::Owned(s.content.into_owned()),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let spans = process_spans(&owned);
+    truncate_with_ellipsis(spans, max_width, has_more_lines)
 }
 
 #[cfg(test)]
@@ -151,7 +214,7 @@ mod tests {
 
     #[test]
     fn bold_renders_with_modifier() {
-        let spans = render_inline("**bold**");
+        let spans = render_inline("**bold**", 80);
         assert!(
             spans
                 .iter()
@@ -161,7 +224,7 @@ mod tests {
 
     #[test]
     fn plain_text_passes_through_unchanged() {
-        let spans = render_inline("just a title");
+        let spans = render_inline("just a title", 80);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "just a title");
     }
@@ -179,8 +242,63 @@ mod tests {
     }
 
     #[test]
+    fn render_treats_a_single_typed_newline_as_a_real_line_break() {
+        let text = render("line one\nline two");
+        let lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert_eq!(lines, vec!["line one", "line two"]);
+    }
+
+    #[test]
+    fn render_still_separates_blank_line_paragraphs() {
+        let text = render("para one\n\npara two");
+        let joined = text
+            .lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(joined.iter().any(|l| l == "para one"));
+        assert!(joined.iter().any(|l| l == "para two"));
+    }
+
+    #[test]
+    fn render_inline_shows_only_first_line_with_ellipsis_when_more_follow() {
+        let spans = render_inline("line one\nline two", 80);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "line one...");
+    }
+
+    #[test]
+    fn render_inline_truncates_a_too_long_single_line_with_ellipsis() {
+        let spans = render_inline("this is a much too long title for the column", 10);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "this is...");
+        assert_eq!(joined.chars().count(), 10);
+    }
+
+    #[test]
+    fn render_inline_does_not_truncate_when_it_fits_and_has_no_more_lines() {
+        let spans = render_inline("short title", 80);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, "short title");
+    }
+
+    #[test]
     fn markdown_link_shows_only_text_styled_as_link() {
-        let spans = render_inline("[a link](https://example.com)");
+        let spans = render_inline("[a link](https://example.com)", 80);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "a link");
         assert!(spans.iter().any(|s| s.style == link_style()));
@@ -188,7 +306,7 @@ mod tests {
 
     #[test]
     fn bare_url_is_linkified() {
-        let spans = render_inline("see https://example.com now");
+        let spans = render_inline("see https://example.com now", 80);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(joined, "see https://example.com now");
         assert!(

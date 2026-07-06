@@ -10,12 +10,14 @@ use todoapp_core::{
     TaskEntityStore, Timestamp, shortest_unique_prefixes,
 };
 use todoapp_store_turso::TursoStore;
+use tui_input::{Input, InputRequest};
 use ulid::Ulid;
 
 use crate::config::Config;
 use crate::human_duration;
 use crate::keymap::{Action, Keymap};
 use crate::schedule::project_finish_date;
+use crate::text_edit;
 
 // ---- Clock & IdGenerator ----------------------------------------------------
 
@@ -95,6 +97,23 @@ pub const EDIT_FORM_LABELS: [&str; 7] = [
     "id (read-only)",
 ];
 
+/// Index of the title field in `TaskEditForm::fields` — multi-line, like
+/// `NOTES_FIELD` (a title can span several lines, same as what the add
+/// dialog already allows when creating a task).
+pub const TITLE_FIELD: usize = 0;
+/// Index of the notes field in `TaskEditForm::fields` — the other field that
+/// gets multi-line editing (Enter inserts a newline, Up/Down move the caret
+/// across wrapped rows) instead of single-line behavior.
+pub const NOTES_FIELD: usize = 1;
+/// Index of the read-only id field in `TaskEditForm::fields`.
+pub const ID_FIELD: usize = 6;
+
+/// Fields that get multi-line editing (Enter inserts a newline, Up/Down move
+/// the caret across wrapped rows) instead of single-line behavior.
+fn is_multiline_field(i: usize) -> bool {
+    i == TITLE_FIELD || i == NOTES_FIELD
+}
+
 /// The multi-field task edit dialog (title/notes/due/estimate/assignee/tags/id),
 /// opened by `Action::EditTitle`. Separate from `InputMode`/`input` since
 /// those are single-line; this carries one buffer per field plus which one
@@ -102,7 +121,7 @@ pub const EDIT_FORM_LABELS: [&str; 7] = [
 #[derive(Clone)]
 pub struct TaskEditForm {
     pub id: Id,
-    pub fields: [String; 7],
+    pub fields: [Input; 7],
     pub focus: usize,
 }
 
@@ -121,7 +140,7 @@ pub struct AppState {
     pub expanded: HashSet<Id>,
     pub view: View,
     /// Active input modal: (mode, typed text).
-    pub input: Option<(InputMode, String)>,
+    pub input: Option<(InputMode, Input)>,
     /// Active task edit form (title/notes/due/estimate/assignee), if open.
     pub edit_form: Option<TaskEditForm>,
     /// Transient one-line message shown in the status bar.
@@ -272,6 +291,25 @@ fn diff_tags(
     (to_add, to_remove)
 }
 
+/// Maps a plain text-editing key to a `tui_input` request, or `None` for keys
+/// handled specially by the caller (Enter/Esc/Tab/Home/End/Up/Down — each has
+/// per-dialog or per-field meaning, see `handle_input_key`/`handle_edit_form_key`).
+fn text_edit_request(code: KeyCode, modifiers: KeyModifiers) -> Option<InputRequest> {
+    let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+    match code {
+        KeyCode::Char(c) if !ctrl => Some(InputRequest::InsertChar(c)),
+        KeyCode::Left if ctrl => Some(InputRequest::GoToPrevWord),
+        KeyCode::Left => Some(InputRequest::GoToPrevChar),
+        KeyCode::Right if ctrl => Some(InputRequest::GoToNextWord),
+        KeyCode::Right => Some(InputRequest::GoToNextChar),
+        KeyCode::Backspace if ctrl => Some(InputRequest::DeletePrevWord),
+        KeyCode::Backspace => Some(InputRequest::DeletePrevChar),
+        KeyCode::Delete if ctrl => Some(InputRequest::DeleteNextWord),
+        KeyCode::Delete => Some(InputRequest::DeleteNextChar),
+        _ => None,
+    }
+}
+
 impl AppState {
     pub async fn new(store: TursoStore, keymap: Keymap, config: Config) -> anyhow::Result<Self> {
         let mut app = Self {
@@ -336,7 +374,11 @@ impl AppState {
 
     /// Returns `false` to signal quit.
     #[allow(clippy::too_many_lines)]
-    pub async fn handle_event(&mut self, event: crossterm::event::Event) -> anyhow::Result<bool> {
+    pub async fn handle_event(
+        &mut self,
+        event: crossterm::event::Event,
+        term_width: u16,
+    ) -> anyhow::Result<bool> {
         let crossterm::event::Event::Key(KeyEvent {
             code,
             modifiers,
@@ -353,11 +395,12 @@ impl AppState {
         if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(false);
         }
+        let width = text_edit::dialog_wrap_width(term_width);
         if self.edit_form.is_some() {
-            return self.handle_edit_form_key(code, modifiers).await;
+            return self.handle_edit_form_key(code, modifiers, width).await;
         }
         if self.input.is_some() {
-            return self.handle_input_key(code, modifiers).await;
+            return self.handle_input_key(code, modifiers, width).await;
         }
         self.status_msg = None;
         let in_tree = matches!(self.view, View::Tree);
@@ -443,16 +486,16 @@ impl AppState {
                     Some(id) => {
                         let svc = make_svc(&self.store, &self.clock, &self.ids);
                         match svc.parent_of(&id).await {
-                            Some(parent_id) => (InputMode::AddChild(parent_id), String::new()),
-                            None => (InputMode::AddRoot, String::new()),
+                            Some(parent_id) => (InputMode::AddChild(parent_id), Input::default()),
+                            None => (InputMode::AddRoot, Input::default()),
                         }
                     }
-                    None => (InputMode::AddRoot, String::new()),
+                    None => (InputMode::AddRoot, Input::default()),
                 });
             }
             // Add root task (tree only)
             Action::AddRoot if in_tree => {
-                self.input = Some((InputMode::AddRoot, String::new()));
+                self.input = Some((InputMode::AddRoot, Input::default()));
             }
             // Edit task (title/notes/due/estimate/assignee) — tree only
             Action::EditTitle if in_tree => {
@@ -489,7 +532,8 @@ impl AppState {
                                 assignee,
                                 tags,
                                 id_display,
-                            ],
+                            ]
+                            .map(Input::from),
                             focus: 0,
                         });
                     }
@@ -531,7 +575,7 @@ impl AppState {
             }
             // Search (any view)
             Action::Search => {
-                self.input = Some((InputMode::Search, String::new()));
+                self.input = Some((InputMode::Search, Input::default()));
             }
             // What-next (any view)
             Action::WhatNext => {
@@ -551,30 +595,43 @@ impl AppState {
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
+        width: usize,
     ) -> anyhow::Result<bool> {
+        let Some((_, input)) = &mut self.input else {
+            return Ok(true);
+        };
         match code {
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some((_, ref mut text)) = self.input {
-                    text.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some((_, ref mut text)) = self.input {
-                    text.pop();
-                }
-            }
-            KeyCode::Esc => {
-                self.input = None;
-            }
-            KeyCode::Enter => {
-                if let Some((mode, text)) = self.input.take() {
-                    let trimmed = text.trim().to_string();
+            // Alt+Enter submits; plain Enter inserts a newline (the dialog is
+            // multi-line/soft-wrapped) — see the keybinding note in the plan:
+            // Ctrl+Enter can't be reliably distinguished from plain Enter
+            // without opting into the Kitty keyboard-enhancement protocol.
+            KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => {
+                if let Some((mode, input)) = self.input.take() {
+                    let trimmed = input.value().trim().to_string();
                     if !trimmed.is_empty() {
                         self.submit_input(mode, trimmed).await?;
                     }
                 }
             }
-            _ => {}
+            KeyCode::Enter => {
+                input.handle(InputRequest::InsertChar('\n'));
+            }
+            KeyCode::Esc => self.input = None,
+            KeyCode::Up => text_edit::move_visual_up(input, width),
+            KeyCode::Down => text_edit::move_visual_down(input, width),
+            KeyCode::Home => {
+                let (start, _) = text_edit::current_line_bounds(input);
+                input.handle(InputRequest::SetCursor(start));
+            }
+            KeyCode::End => {
+                let (_, end) = text_edit::current_line_bounds(input);
+                input.handle(InputRequest::SetCursor(end));
+            }
+            _ => {
+                if let Some(req) = text_edit_request(code, modifiers) {
+                    input.handle(req);
+                }
+            }
         }
         Ok(true)
     }
@@ -631,43 +688,65 @@ impl AppState {
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
+        width: usize,
     ) -> anyhow::Result<bool> {
+        let Some(form) = &mut self.edit_form else {
+            return Ok(true);
+        };
         match code {
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(form) = &mut self.edit_form {
-                    form.fields[form.focus].push(c);
-                }
+            KeyCode::Tab => form.focus = (form.focus + 1) % form.fields.len(),
+            KeyCode::BackTab => {
+                form.focus = (form.focus + form.fields.len() - 1) % form.fields.len();
             }
-            KeyCode::Backspace => {
-                if let Some(form) = &mut self.edit_form {
-                    form.fields[form.focus].pop();
-                }
-            }
-            KeyCode::Tab | KeyCode::Down => {
-                if let Some(form) = &mut self.edit_form {
-                    form.focus = (form.focus + 1) % form.fields.len();
-                }
-            }
-            KeyCode::BackTab | KeyCode::Up => {
-                if let Some(form) = &mut self.edit_form {
-                    form.focus = (form.focus + form.fields.len() - 1) % form.fields.len();
-                }
-            }
-            KeyCode::Esc => {
-                self.edit_form = None;
+            KeyCode::Esc => self.edit_form = None,
+            // Notes: Enter inserts a newline; Alt+Enter (or Enter elsewhere) saves.
+            KeyCode::Enter
+                if is_multiline_field(form.focus) && !modifiers.contains(KeyModifiers::ALT) =>
+            {
+                form.fields[form.focus].handle(InputRequest::InsertChar('\n'));
             }
             KeyCode::Enter => {
                 if let Some(form) = self.edit_form.take() {
                     self.submit_edit_form(form).await?;
                 }
             }
-            _ => {}
+            // Up/Down move the caret within a multi-line field's wrapped
+            // rows; elsewhere they're ignored (Tab/Shift+Tab is the only
+            // focus navigation, freeing Up/Down for in-field caret movement).
+            KeyCode::Up if is_multiline_field(form.focus) => {
+                text_edit::move_visual_up(&mut form.fields[form.focus], width);
+            }
+            KeyCode::Down if is_multiline_field(form.focus) => {
+                text_edit::move_visual_down(&mut form.fields[form.focus], width);
+            }
+            KeyCode::Up | KeyCode::Down => {}
+            KeyCode::Home if is_multiline_field(form.focus) => {
+                let (start, _) = text_edit::current_line_bounds(&form.fields[form.focus]);
+                form.fields[form.focus].handle(InputRequest::SetCursor(start));
+            }
+            KeyCode::End if is_multiline_field(form.focus) => {
+                let (_, end) = text_edit::current_line_bounds(&form.fields[form.focus]);
+                form.fields[form.focus].handle(InputRequest::SetCursor(end));
+            }
+            KeyCode::Home => {
+                form.fields[form.focus].handle(InputRequest::GoToStart);
+            }
+            KeyCode::End => {
+                form.fields[form.focus].handle(InputRequest::GoToEnd);
+            }
+            _ if form.focus == ID_FIELD => {} // read-only, ignore all other edit keys
+            _ => {
+                if let Some(req) = text_edit_request(code, modifiers) {
+                    form.fields[form.focus].handle(req);
+                }
+            }
         }
         Ok(true)
     }
 
     async fn submit_edit_form(&mut self, form: TaskEditForm) -> anyhow::Result<()> {
-        let [title, notes, due, estimate, assignee, tags, _id] = form.fields.clone();
+        let [title, notes, due, estimate, assignee, tags, _id] =
+            form.fields.clone().map(String::from);
         let title = title.trim().to_string();
         if title.is_empty() {
             self.status_msg = Some("edit: title required".to_string());
@@ -885,6 +964,268 @@ mod tests {
             actor: Id::new(actor),
             claimed: false,
         }
+    }
+
+    const TERM_WIDTH: u16 = 120;
+
+    fn press(code: KeyCode, modifiers: KeyModifiers) -> crossterm::event::Event {
+        crossterm::event::Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn press_char(c: char) -> crossterm::event::Event {
+        press(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    async fn new_app() -> AppState {
+        AppState::new(
+            TursoStore::open_memory().await,
+            Keymap::load(None).unwrap(),
+            Config::load(None).unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn type_str(app: &mut AppState, s: &str) {
+        for c in s.chars() {
+            app.handle_event(press_char(c), TERM_WIDTH).await.unwrap();
+        }
+    }
+
+    /// End-to-end: opening the add-root dialog, moving the caret to fix a
+    /// typo mid-string (not just append/backspace-last), and submitting with
+    /// Alt+Enter creates a task with the corrected title.
+    #[tokio::test]
+    async fn add_dialog_supports_mid_string_insert_via_real_cursor() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap(); // add_sibling -> AddRoot (tree empty)
+        type_str(&mut app, "Helo").await;
+        app.handle_event(press(KeyCode::Left, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        type_str(&mut app, "l").await; // fix "Helo" -> "Hello" by inserting before the final 'o'
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "Hello");
+
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.input.is_none());
+        assert!(app.items.iter().any(|i| i.title == "Hello"));
+    }
+
+    /// Home/End jump within the current logical line; Enter inserts a
+    /// newline instead of submitting (Alt+Enter submits).
+    #[tokio::test]
+    async fn add_dialog_is_multiline_with_home_end_per_line() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "foo bar").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        type_str(&mut app, "baz").await;
+        {
+            let (_, input) = app.input.as_ref().unwrap();
+            assert_eq!(input.value(), "foo bar\nbaz");
+        }
+
+        app.handle_event(press(KeyCode::Home, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        {
+            let (_, input) = app.input.as_ref().unwrap();
+            assert_eq!(input.cursor(), 8); // start of the "baz" line, not the whole buffer
+        }
+        app.handle_event(press(KeyCode::End, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        {
+            let (_, input) = app.input.as_ref().unwrap();
+            assert_eq!(input.cursor(), 11); // end of "baz", the whole value's length
+        }
+
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.items.iter().any(|i| i.title == "foo bar\nbaz"));
+    }
+
+    /// Ctrl+Left/Right (word-wise jump) and Ctrl+Backspace (word-wise
+    /// delete) work in the add dialog.
+    #[tokio::test]
+    async fn add_dialog_supports_word_wise_navigation_and_deletion() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "foo bar baz").await;
+        app.handle_event(press(KeyCode::Left, KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        {
+            let (_, input) = app.input.as_ref().unwrap();
+            assert_eq!(input.cursor(), 8); // jumped to the start of "baz"
+        }
+        app.handle_event(press(KeyCode::Backspace, KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "foo baz"); // "bar " word-deleted
+    }
+
+    /// The edit form's notes field is multi-line (Enter inserts a newline,
+    /// Up/Down move the caret across rows); the other fields stay
+    /// single-line. Saving with Alt+Enter persists the multi-line notes.
+    #[tokio::test]
+    async fn edit_form_notes_field_is_multiline_and_saves() {
+        let mut app = new_app().await;
+        let task_id = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.create("Task", None, Status::Todo, []).await.unwrap().id
+        };
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap(); // edit_title
+        assert!(app.edit_form.is_some());
+        app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // focus -> notes
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, NOTES_FIELD);
+
+        type_str(&mut app, "line one").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // newline, not submit (focus is notes)
+        type_str(&mut app, "line two").await;
+        assert!(app.edit_form.is_some(), "Enter on notes must not submit");
+        {
+            let form = app.edit_form.as_ref().unwrap();
+            assert_eq!(form.fields[NOTES_FIELD].value(), "line one\nline two");
+        }
+
+        app.handle_event(press(KeyCode::Up, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        {
+            let form = app.edit_form.as_ref().unwrap();
+            // moved up from end of "line two" (col 8) to the same column on "line one"
+            assert_eq!(form.fields[NOTES_FIELD].cursor(), 8);
+        }
+
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.edit_form.is_none());
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        let snap = svc.snapshot(&task_id).await.unwrap();
+        assert_eq!(snap.notes.as_deref(), Some("line one\nline two"));
+    }
+
+    /// The title field is multi-line too (mirrors notes): a title created
+    /// with embedded newlines via the add dialog can be re-edited and
+    /// re-saved with those newlines intact.
+    #[tokio::test]
+    async fn edit_form_title_field_is_multiline_and_saves() {
+        let mut app = new_app().await;
+        let task_id = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.create("Task", None, Status::Todo, []).await.unwrap().id
+        };
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, TITLE_FIELD);
+
+        // Replace the title with a two-line one.
+        for _ in 0..4 {
+            app.handle_event(press(KeyCode::Backspace, KeyModifiers::CONTROL), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        type_str(&mut app, "Title one").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // newline, not submit (focus is title)
+        type_str(&mut app, "Title two").await;
+        assert!(app.edit_form.is_some(), "Enter on title must not submit");
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[TITLE_FIELD].value(),
+            "Title one\nTitle two"
+        );
+
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.edit_form.is_none());
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        let snap = svc.snapshot(&task_id).await.unwrap();
+        assert_eq!(snap.title, "Title one\nTitle two");
+    }
+
+    /// The id field is read-only: no key (typing, backspace, ...) changes
+    /// its displayed value.
+    #[tokio::test]
+    async fn edit_form_id_field_is_read_only() {
+        let mut app = new_app().await;
+        let task_id = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.create("Task", None, Status::Todo, []).await.unwrap().id
+        };
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+
+        for _ in 0..ID_FIELD {
+            app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, ID_FIELD);
+        let before = app.edit_form.as_ref().unwrap().fields[ID_FIELD]
+            .value()
+            .to_string();
+        app.handle_event(press_char('x'), TERM_WIDTH).await.unwrap();
+        app.handle_event(press(KeyCode::Backspace, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[ID_FIELD].value(),
+            before
+        );
+    }
+
+    /// Up/Down no longer cycle focus (that's Tab/Shift+Tab only) now that
+    /// they mean "move the caret" within the notes field.
+    #[tokio::test]
+    async fn edit_form_up_down_do_not_change_focus_outside_notes() {
+        let mut app = new_app().await;
+        let task_id = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.create("Task", None, Status::Todo, []).await.unwrap().id
+        };
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, 0);
+
+        app.handle_event(press(KeyCode::Down, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, 0);
+        app.handle_event(press(KeyCode::Up, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, 0);
+
+        app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, 1);
+        app.handle_event(press(KeyCode::BackTab, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, 0);
     }
 
     #[test]

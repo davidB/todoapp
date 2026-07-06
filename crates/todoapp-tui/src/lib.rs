@@ -6,6 +6,7 @@ mod human_duration;
 mod keymap;
 mod markdown;
 mod schedule;
+mod text_edit;
 mod ui;
 
 use std::path::PathBuf;
@@ -100,8 +101,9 @@ async fn run_loop(
         .await
         .context("event thread")??;
         app.throbber_state.calc_next();
+        let term_width = terminal.size()?.width;
         if let Some(event) = event
-            && !app.handle_event(event).await?
+            && !app.handle_event(event, term_width).await?
         {
             break;
         }

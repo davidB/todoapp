@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -12,9 +12,10 @@ use ratatui::{
 };
 use todoapp_core::Status;
 
-use crate::app::{AppState, InputMode, View, VisibleItem};
+use crate::app::{AppState, ID_FIELD, InputMode, NOTES_FIELD, TITLE_FIELD, View, VisibleItem};
 use crate::config::ColumnKind;
 use crate::keymap::{Action, Keymap};
+use crate::text_edit;
 
 pub fn render(f: &mut Frame, app: &AppState) {
     let area = f.area();
@@ -41,8 +42,8 @@ pub fn render(f: &mut Frame, app: &AppState) {
 
     render_status_bar(f, status_bar, app);
 
-    if let Some((mode, text)) = &app.input {
-        render_input_modal(f, area, mode, text);
+    if let Some((mode, input)) = &app.input {
+        render_input_modal(f, area, mode, input);
     }
     if let Some(form) = &app.edit_form {
         render_edit_form(f, area, form);
@@ -60,10 +61,18 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
     let header = Row::new(
         std::iter::once(Cell::from("tree")).chain(columns.iter().map(|c| Cell::from(c.header()))),
     );
+    // Approximate the tree (title) column's rendered width: total width minus
+    // the block's left/right border, the other configured columns, and one
+    // column-spacing gap per configured column (Table's default spacing).
+    // ponytail: an approximation, not ratatui's exact layout math — only
+    // used to size the ellipsis truncation, a char or two off doesn't matter.
+    let configured_width: u16 = columns.iter().map(|c| column_width(*c)).sum();
+    let gaps = u16::try_from(columns.len()).unwrap_or(0);
+    let tree_col_width = area.width.saturating_sub(2 + configured_width + gaps);
     let rows: Vec<Row> = app
         .items
         .iter()
-        .map(|item| item_row(item, columns, app))
+        .map(|item| item_row(item, columns, app, tree_col_width))
         .collect();
 
     let mut widths = vec![Constraint::Fill(1)];
@@ -90,14 +99,20 @@ fn column_width(kind: ColumnKind) -> u16 {
     }
 }
 
-fn item_row(item: &VisibleItem, columns: &[ColumnKind], app: &AppState) -> Row<'static> {
-    let tree_cell = Cell::from(tree_cell_line(item, app)).style(tree_status_style(item.status));
+fn item_row(
+    item: &VisibleItem,
+    columns: &[ColumnKind],
+    app: &AppState,
+    tree_col_width: u16,
+) -> Row<'static> {
+    let tree_cell =
+        Cell::from(tree_cell_line(item, app, tree_col_width)).style(tree_status_style(item.status));
     let cells =
         std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c, app)));
     Row::new(cells)
 }
 
-fn tree_cell_line(item: &VisibleItem, app: &AppState) -> Line<'static> {
+fn tree_cell_line(item: &VisibleItem, app: &AppState, tree_col_width: u16) -> Line<'static> {
     let indent = "  ".repeat(item.depth);
     let arrow = if item.has_children {
         if item.is_expanded { "▼ " } else { "▶ " }
@@ -105,8 +120,14 @@ fn tree_cell_line(item: &VisibleItem, app: &AppState) -> Line<'static> {
         "· "
     };
     let icon = status_icon(item.status, app);
-    let mut spans = vec![Span::raw(format!("{indent}{arrow}{icon} "))];
-    spans.extend(crate::markdown::render_inline(&item.title));
+    let prefix = format!("{indent}{arrow}{icon} ");
+    let badge_width = if item.is_blocked { 4 } else { 0 }; // " [!]"
+    let title_width = usize::from(tree_col_width)
+        .saturating_sub(prefix.chars().count())
+        .saturating_sub(badge_width)
+        .max(1);
+    let mut spans = vec![Span::raw(prefix)];
+    spans.extend(crate::markdown::render_inline(&item.title, title_width));
     if item.is_blocked {
         spans.push(Span::raw(" [!]"));
     }
@@ -162,6 +183,7 @@ fn progress_bar(done: usize, total: usize) -> String {
 }
 
 fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::QueryHit]) {
+    let inner_width = area.width.saturating_sub(2); // block's left/right border
     let items: Vec<ListItem> = hits
         .iter()
         .map(|hit| {
@@ -171,8 +193,12 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
                 format!("[{}] ", hit.path.join(" › "))
             };
             let icon = status_icon(hit.task.status, app);
-            let mut spans = vec![Span::raw(format!("{breadcrumb}{icon} "))];
-            spans.extend(crate::markdown::render_inline(&hit.task.title));
+            let prefix = format!("{breadcrumb}{icon} ");
+            let title_width = usize::from(inner_width)
+                .saturating_sub(prefix.chars().count())
+                .max(1);
+            let mut spans = vec![Span::raw(prefix)];
+            spans.extend(crate::markdown::render_inline(&hit.task.title, title_width));
             ListItem::new(Line::from(spans)).style(status_style(hit.task.status))
         })
         .collect();
@@ -248,43 +274,135 @@ fn default_hint(keymap: &Keymap) -> String {
     )
 }
 
-fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, text: &str) {
+/// Cap on how tall the add/search dialog grows before it scrolls instead.
+const MAX_DIALOG_VISIBLE_ROWS: usize = 10;
+/// Cap on how many wrapped rows the edit form's notes field shows before it
+/// scrolls instead of growing the popup further.
+const MAX_NOTES_VISIBLE_ROWS: usize = 6;
+
+/// The add/child/search text dialog: multi-line, soft-wrapped, growing (up to
+/// `MAX_DIALOG_VISIBLE_ROWS`) then vertically scrolling. Enter inserts a
+/// newline; Alt+Enter submits (see `app::handle_input_key`).
+fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, input: &tui_input::Input) {
     let title = match mode {
-        InputMode::AddChild(_) => " new child task ",
-        InputMode::AddRoot => " new root task ",
-        InputMode::Search => " search ",
+        InputMode::AddChild(_) => " new child task (alt+enter submit · esc cancel) ",
+        InputMode::AddRoot => " new root task (alt+enter submit · esc cancel) ",
+        InputMode::Search => " search (alt+enter submit · esc cancel) ",
     };
-    let popup = centered_rect(area, 60, 3);
-    let p = Paragraph::new(format!("{text}▌"))
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let width = text_edit::dialog_wrap_width(area.width);
+    let rows = text_edit::visual_rows(input, width);
+    let visible = rows.len().clamp(1, MAX_DIALOG_VISIBLE_ROWS);
+    let popup = centered_rect(area, 60, u16::try_from(visible + 2).unwrap_or(u16::MAX));
+    let (cursor_row, cursor_col) = text_edit::cursor_visual_pos(input, width);
+    let top = text_edit::viewport_scroll(cursor_row, rows.len(), visible);
+    let text = rows[top..(top + visible).min(rows.len())].join("\n");
+    let p = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(Clear, popup);
     f.render_widget(p, popup);
+    f.set_cursor_position(Position::new(
+        popup.x + 1 + u16::try_from(cursor_col).unwrap_or(0),
+        popup.y + 1 + u16::try_from(cursor_row.saturating_sub(top)).unwrap_or(0),
+    ));
 }
 
-/// The multi-field task edit dialog: one line per field, the focused field
-/// gets a cursor and a highlight style (Tab/Shift+Tab cycles focus).
+/// Wrapped-row layout for one multi-line field: visual rows, how many are
+/// shown (capped at `MAX_NOTES_VISIBLE_ROWS`), the top scrolled-to row, and
+/// the cursor's visual `(row, col)`.
+fn multiline_layout(
+    field: &tui_input::Input,
+    inner_width: usize,
+) -> (Vec<&str>, usize, usize, usize, usize) {
+    let rows = text_edit::visual_rows(field, inner_width);
+    let visible = rows.len().clamp(1, MAX_NOTES_VISIBLE_ROWS);
+    let (cursor_row, cursor_col) = text_edit::cursor_visual_pos(field, inner_width);
+    let top = text_edit::viewport_scroll(cursor_row, rows.len(), visible);
+    (rows, visible, top, cursor_row, cursor_col)
+}
+
+/// The multi-field task edit dialog. Title and notes are multi-line/
+/// soft-wrapped like the add dialog, each with its own vertical scroll; the
+/// other fields are one line each with their own horizontal scroll.
+/// Tab/Shift+Tab cycles focus; the id field is read-only (never gets a
+/// cursor).
 fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::app::TaskEditForm) {
-    let height = u16::try_from(crate::app::EDIT_FORM_LABELS.len() + 2).unwrap_or(u16::MAX);
-    let popup = centered_rect(area, 60, height);
-    let lines: Vec<Line> = crate::app::EDIT_FORM_LABELS
+    let inner_width = text_edit::dialog_wrap_width(area.width);
+
+    let single_line_count = crate::app::EDIT_FORM_LABELS.len() - 2; // all but title/notes
+    let multiline_visible_total: usize = [TITLE_FIELD, NOTES_FIELD]
         .iter()
-        .zip(&form.fields)
-        .enumerate()
-        .map(|(i, (label, value))| {
-            let focused = i == form.focus;
-            let cursor = if focused { "▌" } else { "" };
-            let text = format!("{label}: {value}{cursor}");
-            if focused {
-                Line::styled(text, Style::default().add_modifier(Modifier::BOLD))
+        .map(|&i| multiline_layout(&form.fields[i], inner_width).1)
+        .sum();
+    let height =
+        u16::try_from(single_line_count + 2 + multiline_visible_total + 2).unwrap_or(u16::MAX);
+    let popup = centered_rect(area, 60, height);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cursor_pos: Option<(u16, u16)> = None;
+
+    for (i, label) in crate::app::EDIT_FORM_LABELS.iter().enumerate() {
+        let focused = i == form.focus;
+        if i == TITLE_FIELD || i == NOTES_FIELD {
+            let (rows, visible, top, cursor_row, cursor_col) =
+                multiline_layout(&form.fields[i], inner_width);
+            lines.push(if focused {
+                Line::styled(
+                    format!("{label}:"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )
             } else {
-                Line::raw(text)
+                Line::raw(format!("{label}:"))
+            });
+            let visible_rows = &rows[top..(top + visible).min(rows.len())];
+            for (row_idx, row) in visible_rows.iter().enumerate() {
+                let line_idx = lines.len();
+                lines.push(if focused {
+                    Line::styled(
+                        (*row).to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Line::raw((*row).to_string())
+                });
+                if focused && top + row_idx == cursor_row {
+                    cursor_pos = Some((
+                        u16::try_from(cursor_col).unwrap_or(0),
+                        u16::try_from(line_idx).unwrap_or(0),
+                    ));
+                }
             }
-        })
-        .collect();
-    let p =
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" edit task "));
+            continue;
+        }
+
+        let field = &form.fields[i];
+        let avail = inner_width.saturating_sub(label.len() + 2).max(1);
+        let value = field.value();
+        let total_chars = value.chars().count();
+        let scroll = text_edit::viewport_scroll(field.cursor(), total_chars, avail);
+        let visible: String = value.chars().skip(scroll).take(avail).collect();
+        let text = format!("{label}: {visible}");
+        let line_idx = lines.len();
+        lines.push(if focused {
+            Line::styled(text, Style::default().add_modifier(Modifier::BOLD))
+        } else {
+            Line::raw(text)
+        });
+        if focused && i != ID_FIELD {
+            let col = label.len() + 2 + (field.cursor() - scroll);
+            cursor_pos = Some((
+                u16::try_from(col).unwrap_or(0),
+                u16::try_from(line_idx).unwrap_or(0),
+            ));
+        }
+    }
+
+    let p = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(
+        " edit task (tab/shift+tab fields · notes: enter=newline, alt+enter=save · esc cancel) ",
+    ));
     f.render_widget(Clear, popup);
     f.render_widget(p, popup);
+    if let Some((x, y)) = cursor_pos {
+        f.set_cursor_position(Position::new(popup.x + 1 + x, popup.y + 1 + y));
+    }
 }
 
 fn render_help(f: &mut Frame, area: Rect, keymap: &Keymap) {
