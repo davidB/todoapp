@@ -13,6 +13,7 @@ use todoapp_store_turso::TursoStore;
 use tui_input::{Input, InputRequest};
 use ulid::Ulid;
 
+use crate::clipboard::Clipboard;
 use crate::config::Config;
 use crate::human_duration;
 use crate::keymap::{Action, Keymap};
@@ -108,6 +109,19 @@ pub const NOTES_FIELD: usize = 1;
 /// Index of the read-only id field in `TaskEditForm::fields`.
 pub const ID_FIELD: usize = 6;
 
+/// How long a status-bar toast message (yank confirmation, error, ...) stays
+/// visible before falling back to the keybinding hints, absent further input.
+const STATUS_MSG_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A char-index range (into the *first line* of the current row's title)
+/// being extended in select mode. Order-independent — either end may be the
+/// smaller index; `y` copies the inclusive `[min, max]` range.
+#[derive(Clone, Copy)]
+pub struct Selection {
+    pub anchor: usize,
+    pub cursor: usize,
+}
+
 /// Fields that get multi-line editing (Enter inserts a newline, Up/Down move
 /// the caret across wrapped rows) instead of single-line behavior.
 fn is_multiline_field(i: usize) -> bool {
@@ -143,12 +157,20 @@ pub struct AppState {
     pub input: Option<(InputMode, Input)>,
     /// Active task edit form (title/notes/due/estimate/assignee), if open.
     pub edit_form: Option<TaskEditForm>,
-    /// Transient one-line message shown in the status bar.
+    /// Active char-range selection on the current row's title (Tree/List),
+    /// while in select mode (entered via `Action::Select`).
+    pub selection: Option<Selection>,
+    /// Transient one-line message shown in the status bar, as a toast: reset
+    /// on the next keypress (see `handle_event`) and auto-expires after
+    /// `STATUS_MSG_TTL` even with no further input (checked in `ui.rs`'s
+    /// `render_status_bar`, not mutated here — redraw is on a timer already).
     pub status_msg: Option<String>,
+    status_msg_expires_at: Option<std::time::Instant>,
     pub keymap: Keymap,
     pub config: Config,
     /// Animation state for the `wip` status spinner, advanced once per redraw.
     pub throbber_state: throbber_widgets_tui::ThrobberState,
+    pub clipboard: Box<dyn Clipboard>,
 }
 
 /// Build a `Services` bundle from individual field references so the borrow
@@ -311,7 +333,12 @@ fn text_edit_request(code: KeyCode, modifiers: KeyModifiers) -> Option<InputRequ
 }
 
 impl AppState {
-    pub async fn new(store: TursoStore, keymap: Keymap, config: Config) -> anyhow::Result<Self> {
+    pub async fn new(
+        store: TursoStore,
+        keymap: Keymap,
+        config: Config,
+        clipboard: Box<dyn Clipboard>,
+    ) -> anyhow::Result<Self> {
         let mut app = Self {
             store,
             clock: SystemClock,
@@ -323,10 +350,13 @@ impl AppState {
             view: View::Tree,
             input: None,
             edit_form: None,
+            selection: None,
             status_msg: None,
+            status_msg_expires_at: None,
             keymap,
             config,
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
+            clipboard,
         };
         app.rebuild().await;
         Ok(app)
@@ -358,6 +388,43 @@ impl AppState {
 
     pub fn cursor_id(&self) -> Option<Id> {
         self.items.get(self.cursor).map(|i| i.id.clone())
+    }
+
+    /// Raw (unrendered) title of the current row, Tree/List only.
+    fn current_row_title(&self) -> Option<&str> {
+        match &self.view {
+            View::Tree | View::Help => self.items.get(self.cursor).map(|i| i.title.as_str()),
+            View::List(hits) => hits.get(self.cursor).map(|h| h.task.title.as_str()),
+            View::Detail { .. } => None,
+        }
+    }
+
+    /// Set the toast message shown in the status bar, starting its
+    /// auto-expiry countdown (see `status_msg_display`).
+    fn set_status(&mut self, msg: String) {
+        self.status_msg = Some(msg);
+        self.status_msg_expires_at = Some(std::time::Instant::now() + STATUS_MSG_TTL);
+    }
+
+    /// The status message to display, or `None` if it has expired (in which
+    /// case the caller falls back to the default keybinding hints) — a
+    /// display-time check, not a mutation, so it works from `ui.rs`'s
+    /// read-only `render`.
+    pub fn status_msg_display(&self) -> Option<&str> {
+        match (&self.status_msg, self.status_msg_expires_at) {
+            (Some(msg), Some(expires_at)) if std::time::Instant::now() < expires_at => {
+                Some(msg.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    fn yank(&mut self, text: &str) {
+        let msg = match self.clipboard.set_text(text.to_string()) {
+            Ok(()) => format!("yanked {} chars", text.chars().count()),
+            Err(e) => format!("yank: {e}"),
+        };
+        self.set_status(msg);
     }
 
     fn move_cursor(&mut self, down: bool) {
@@ -401,6 +468,9 @@ impl AppState {
         }
         if self.input.is_some() {
             return self.handle_input_key(code, modifiers, width).await;
+        }
+        if self.selection.is_some() {
+            return Ok(self.handle_select_key(code));
         }
         self.status_msg = None;
         let in_tree = matches!(self.view, View::Tree);
@@ -573,6 +643,22 @@ impl AppState {
             Action::ReparentOut if in_tree => {
                 self.reparent_out().await?;
             }
+            // Enter char-range select mode on the current row's title (any view).
+            Action::Select => {
+                if self.current_row_title().is_some() {
+                    self.selection = Some(Selection {
+                        anchor: 0,
+                        cursor: 0,
+                    });
+                }
+            }
+            // Yank (copy) the whole current row's title to the clipboard (any view).
+            Action::Yank => {
+                if let Some(title) = self.current_row_title() {
+                    let title = title.to_string();
+                    self.yank(&title);
+                }
+            }
             // Search (any view)
             Action::Search => {
                 self.input = Some((InputMode::Search, Input::default()));
@@ -589,6 +675,47 @@ impl AppState {
             _ => {}
         }
         Ok(true)
+    }
+
+    /// Key handling while `selection` is active: h/l/Left/Right move+extend
+    /// the selection cursor within the current row's first line; `y` yanks
+    /// the selected range and exits; anything else exits select mode
+    /// without performing its normal (tree/list) action, matching how
+    /// `edit_form`/`input` fully gate the rest of `handle_event`'s dispatch.
+    fn handle_select_key(&mut self, code: KeyCode) -> bool {
+        let first_line_len = self
+            .current_row_title()
+            .map_or(0, |t| t.split('\n').next().unwrap_or("").chars().count());
+        let Some(sel) = &mut self.selection else {
+            return true;
+        };
+        match code {
+            KeyCode::Char('h') | KeyCode::Left => {
+                sel.cursor = sel.cursor.saturating_sub(1);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                sel.cursor = (sel.cursor + 1).min(first_line_len.saturating_sub(1));
+            }
+            KeyCode::Char('y') => {
+                let sel = self.selection.take().unwrap_or(Selection {
+                    anchor: 0,
+                    cursor: 0,
+                });
+                let start = sel.anchor.min(sel.cursor);
+                let end = sel.anchor.max(sel.cursor);
+                if let Some(title) = self.current_row_title() {
+                    let first_line = title.split('\n').next().unwrap_or("");
+                    let text: String = first_line
+                        .chars()
+                        .skip(start)
+                        .take(end + 1 - start)
+                        .collect();
+                    self.yank(&text);
+                }
+            }
+            _ => self.selection = None,
+        }
+        true
     }
 
     async fn handle_input_key(
@@ -626,6 +753,16 @@ impl AppState {
             KeyCode::End => {
                 let (_, end) = text_edit::current_line_bounds(input);
                 input.handle(InputRequest::SetCursor(end));
+            }
+            KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
+                match self.clipboard.get_text() {
+                    Ok(text) => {
+                        for c in text.chars() {
+                            input.handle(InputRequest::InsertChar(c));
+                        }
+                    }
+                    Err(e) => self.set_status(format!("paste: {e}")),
+                }
             }
             _ => {
                 if let Some(req) = text_edit_request(code, modifiers) {
@@ -734,6 +871,18 @@ impl AppState {
             KeyCode::End => {
                 form.fields[form.focus].handle(InputRequest::GoToEnd);
             }
+            KeyCode::Char('v')
+                if modifiers.contains(KeyModifiers::CONTROL) && form.focus != ID_FIELD =>
+            {
+                match self.clipboard.get_text() {
+                    Ok(text) => {
+                        for c in text.chars() {
+                            form.fields[form.focus].handle(InputRequest::InsertChar(c));
+                        }
+                    }
+                    Err(e) => self.set_status(format!("paste: {e}")),
+                }
+            }
             _ if form.focus == ID_FIELD => {} // read-only, ignore all other edit keys
             _ => {
                 if let Some(req) = text_edit_request(code, modifiers) {
@@ -749,7 +898,7 @@ impl AppState {
             form.fields.clone().map(String::from);
         let title = title.trim().to_string();
         if title.is_empty() {
-            self.status_msg = Some("edit: title required".to_string());
+            self.set_status("edit: title required".to_string());
             self.edit_form = Some(form);
             return Ok(());
         }
@@ -760,7 +909,7 @@ impl AppState {
             match Due::parse(due) {
                 Ok(d) => Some(d),
                 Err(e) => {
-                    self.status_msg = Some(format!("edit: due date: {e}"));
+                    self.set_status(format!("edit: due date: {e}"));
                     self.edit_form = Some(form);
                     return Ok(());
                 }
@@ -777,7 +926,7 @@ impl AppState {
             ) {
                 Ok(d) => Some(d),
                 Err(e) => {
-                    self.status_msg = Some(format!("edit: estimate: {e}"));
+                    self.set_status(format!("edit: estimate: {e}"));
                     self.edit_form = Some(form);
                     return Ok(());
                 }
@@ -818,7 +967,7 @@ impl AppState {
             let _ = svc.remove_tag(&form.id, tag).await;
         }
         if let Err(e) = result {
-            self.status_msg = Some(format!("edit: {e}"));
+            self.set_status(format!("edit: {e}"));
         }
         self.rebuild().await;
         Ok(())
@@ -838,7 +987,7 @@ impl AppState {
             svc.set_status(&item.id, new_status).await
         };
         if let Err(e) = result {
-            self.status_msg = Some(format!("status: {e}"));
+            self.set_status(format!("status: {e}"));
         }
         self.rebuild().await;
         Ok(())
@@ -855,7 +1004,7 @@ impl AppState {
         };
         match result {
             Ok(_) => self.rebuild().await,
-            Err(e) => self.status_msg = Some(format!("claim: {e}")),
+            Err(e) => self.set_status(format!("claim: {e}")),
         }
         Ok(())
     }
@@ -882,7 +1031,7 @@ impl AppState {
                 svc.reorder(&item.id, anchor).await
             };
             if let Err(e) = result {
-                self.status_msg = Some(format!("reorder: {e}"));
+                self.set_status(format!("reorder: {e}"));
             }
             self.rebuild().await;
             if let Some(pos) = self.items.iter().position(|i| i.id == item.id) {
@@ -902,7 +1051,7 @@ impl AppState {
             .rfind(|i| i.depth == item.depth)
             .cloned()
         else {
-            self.status_msg = Some("reparent: no sibling above".to_string());
+            self.set_status("reparent: no sibling above".to_string());
             return Ok(());
         };
         let result = {
@@ -917,7 +1066,7 @@ impl AppState {
                     self.cursor = pos;
                 }
             }
-            Err(e) => self.status_msg = Some(format!("reparent: {e}")),
+            Err(e) => self.set_status(format!("reparent: {e}")),
         }
         Ok(())
     }
@@ -942,14 +1091,14 @@ impl AppState {
             }
         };
         match outcome {
-            None => self.status_msg = Some("reparent: already at top level".to_string()),
+            None => self.set_status("reparent: already at top level".to_string()),
             Some(Ok(())) => {
                 self.rebuild().await;
                 if let Some(pos) = self.items.iter().position(|i| i.id == item.id) {
                     self.cursor = pos;
                 }
             }
-            Some(Err(e)) => self.status_msg = Some(format!("reparent: {e}")),
+            Some(Err(e)) => self.set_status(format!("reparent: {e}")),
         }
         Ok(())
     }
@@ -981,6 +1130,7 @@ mod tests {
             TursoStore::open_memory().await,
             Keymap::load(None).unwrap(),
             Config::load(None).unwrap(),
+            Box::new(crate::clipboard::FakeClipboard::default()),
         )
         .await
         .unwrap()
@@ -1226,6 +1376,106 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(app.edit_form.as_ref().unwrap().focus, 0);
+    }
+
+    async fn create_task_titled(app: &mut AppState, title: &str) {
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(app, title).await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn yank_with_no_selection_copies_whole_title() {
+        let mut app = new_app().await;
+        create_task_titled(&mut app, "Hello world").await;
+        app.handle_event(press_char('y'), TERM_WIDTH).await.unwrap();
+        assert_eq!(app.clipboard.get_text().unwrap(), "Hello world");
+    }
+
+    #[tokio::test]
+    async fn select_mode_extends_and_yanks_a_character_range() {
+        let mut app = new_app().await;
+        create_task_titled(&mut app, "Hello world").await;
+        app.handle_event(press_char('V'), TERM_WIDTH).await.unwrap();
+        assert!(app.selection.is_some());
+        for _ in 0..4 {
+            app.handle_event(press(KeyCode::Right, KeyModifiers::NONE), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        app.handle_event(press_char('y'), TERM_WIDTH).await.unwrap();
+        assert!(app.selection.is_none());
+        assert_eq!(app.clipboard.get_text().unwrap(), "Hello");
+    }
+
+    #[tokio::test]
+    async fn select_mode_blocks_row_navigation_and_exits_on_other_keys() {
+        let mut app = new_app().await;
+        create_task_titled(&mut app, "Hello world").await;
+        create_task_titled(&mut app, "Second task").await;
+        app.handle_event(press_char('V'), TERM_WIDTH).await.unwrap();
+        let cursor_before = app.cursor;
+        app.handle_event(press_char('j'), TERM_WIDTH).await.unwrap();
+        assert_eq!(app.cursor, cursor_before);
+        assert!(app.selection.is_none());
+    }
+
+    #[tokio::test]
+    async fn ctrl_v_pastes_clipboard_into_add_dialog() {
+        let mut app = new_app().await;
+        app.clipboard.set_text("pasted text".to_string()).unwrap();
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        app.handle_event(press(KeyCode::Char('v'), KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "pasted text");
+    }
+
+    #[tokio::test]
+    async fn ctrl_v_paste_is_blocked_on_id_field_but_works_on_title_field() {
+        let mut app = new_app().await;
+        let task_id = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.create("Task", None, Status::Todo, []).await.unwrap().id
+        };
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == task_id).unwrap();
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        app.clipboard.set_text("pasted".to_string()).unwrap();
+
+        for _ in 0..ID_FIELD {
+            app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, ID_FIELD);
+        let before = app.edit_form.as_ref().unwrap().fields[ID_FIELD]
+            .value()
+            .to_string();
+        app.handle_event(press(KeyCode::Char('v'), KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[ID_FIELD].value(),
+            before
+        );
+
+        for _ in 0..ID_FIELD {
+            app.handle_event(press(KeyCode::BackTab, KeyModifiers::NONE), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, TITLE_FIELD);
+        app.handle_event(press(KeyCode::Char('v'), KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[TITLE_FIELD].value(),
+            "Taskpasted"
+        );
     }
 
     #[test]

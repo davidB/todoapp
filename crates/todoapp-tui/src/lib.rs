@@ -1,6 +1,7 @@
 //! tda TUI (spec §10 M4): open the Turso store, run the event loop. Called from todoapp-cli's `tui` subcommand.
 
 mod app;
+mod clipboard;
 mod config;
 mod human_duration;
 mod keymap;
@@ -15,6 +16,7 @@ use anyhow::Context as _;
 use todoapp_store_turso::TursoStore;
 
 use crate::app::AppState;
+use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Config;
 use crate::keymap::Keymap;
 
@@ -71,7 +73,9 @@ pub async fn run() -> anyhow::Result<()> {
     let keymap = load_keymap().context("load keybindings")?;
     let config = load_config().context("load config")?;
 
-    let mut app = AppState::new(store, keymap, config).await?;
+    let clipboard: Box<dyn Clipboard> = Box::new(SystemClipboard::new());
+
+    let mut app = AppState::new(store, keymap, config, clipboard).await?;
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app).await;
     ratatui::restore();

@@ -33,6 +33,8 @@ pub enum Action {
     WhatNext,
     ToggleHelp,
     Quit,
+    Select,
+    Yank,
 }
 
 impl Action {
@@ -83,6 +85,12 @@ impl Action {
         ),
         ("toggle_help", Action::ToggleHelp, "toggle help"),
         ("quit", Action::Quit, "quit / back"),
+        (
+            "select",
+            Action::Select,
+            "select title text (character range)",
+        ),
+        ("yank", Action::Yank, "yank (copy) title to clipboard"),
     ];
 
     fn from_name(name: &str) -> Option<Action> {

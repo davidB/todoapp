@@ -12,7 +12,9 @@ use ratatui::{
 };
 use todoapp_core::Status;
 
-use crate::app::{AppState, ID_FIELD, InputMode, NOTES_FIELD, TITLE_FIELD, View, VisibleItem};
+use crate::app::{
+    AppState, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View, VisibleItem,
+};
 use crate::config::ColumnKind;
 use crate::keymap::{Action, Keymap};
 use crate::text_edit;
@@ -72,7 +74,8 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
     let rows: Vec<Row> = app
         .items
         .iter()
-        .map(|item| item_row(item, columns, app, tree_col_width))
+        .enumerate()
+        .map(|(i, item)| item_row(item, columns, app, tree_col_width, i == app.cursor))
         .collect();
 
     let mut widths = vec![Constraint::Fill(1)];
@@ -104,15 +107,21 @@ fn item_row(
     columns: &[ColumnKind],
     app: &AppState,
     tree_col_width: u16,
+    is_cursor: bool,
 ) -> Row<'static> {
-    let tree_cell =
-        Cell::from(tree_cell_line(item, app, tree_col_width)).style(tree_status_style(item.status));
+    let tree_cell = Cell::from(tree_cell_line(item, app, tree_col_width, is_cursor))
+        .style(tree_status_style(item.status));
     let cells =
         std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c, app)));
     Row::new(cells)
 }
 
-fn tree_cell_line(item: &VisibleItem, app: &AppState, tree_col_width: u16) -> Line<'static> {
+fn tree_cell_line(
+    item: &VisibleItem,
+    app: &AppState,
+    tree_col_width: u16,
+    is_cursor: bool,
+) -> Line<'static> {
     let indent = "  ".repeat(item.depth);
     let arrow = if item.has_children {
         if item.is_expanded { "▼ " } else { "▶ " }
@@ -127,11 +136,42 @@ fn tree_cell_line(item: &VisibleItem, app: &AppState, tree_col_width: u16) -> Li
         .saturating_sub(badge_width)
         .max(1);
     let mut spans = vec![Span::raw(prefix)];
-    spans.extend(crate::markdown::render_inline(&item.title, title_width));
+    match (is_cursor, app.selection) {
+        (true, Some(sel)) => spans.extend(selection_spans(&item.title, title_width, sel)),
+        _ => spans.extend(crate::markdown::render_inline(&item.title, title_width)),
+    }
     if item.is_blocked {
         spans.push(Span::raw(" [!]"));
     }
     Line::from(spans)
+}
+
+/// ponytail: plain (non-Markdown) first line of `title`, clipped to `width`
+/// chars, with the inclusive `sel` char range reversed — this is only shown
+/// on the cursor row while actively selecting, so skipping Markdown rendering
+/// and ellipsis truncation here is a deliberate simplification, not a gap.
+fn selection_spans(title: &str, width: usize, sel: Selection) -> Vec<Span<'static>> {
+    let first_line = title.split('\n').next().unwrap_or("");
+    let chars: Vec<char> = first_line.chars().take(width.max(1)).collect();
+    let start = sel.anchor.min(sel.cursor).min(chars.len());
+    let end = sel
+        .anchor
+        .max(sel.cursor)
+        .min(chars.len().saturating_sub(1));
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::raw(chars[..start].iter().collect::<String>()));
+    }
+    if start < chars.len() {
+        spans.push(Span::styled(
+            chars[start..=end.max(start)].iter().collect::<String>(),
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+    }
+    if end + 1 < chars.len() {
+        spans.push(Span::raw(chars[end + 1..].iter().collect::<String>()));
+    }
+    spans
 }
 
 fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'static> {
@@ -186,7 +226,8 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
     let inner_width = area.width.saturating_sub(2); // block's left/right border
     let items: Vec<ListItem> = hits
         .iter()
-        .map(|hit| {
+        .enumerate()
+        .map(|(i, hit)| {
             let breadcrumb = if hit.path.is_empty() {
                 String::new()
             } else {
@@ -198,7 +239,12 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
                 .saturating_sub(prefix.chars().count())
                 .max(1);
             let mut spans = vec![Span::raw(prefix)];
-            spans.extend(crate::markdown::render_inline(&hit.task.title, title_width));
+            match (i == app.cursor, app.selection) {
+                (true, Some(sel)) => {
+                    spans.extend(selection_spans(&hit.task.title, title_width, sel));
+                }
+                _ => spans.extend(crate::markdown::render_inline(&hit.task.title, title_width)),
+            }
             ListItem::new(Line::from(spans)).style(status_style(hit.task.status))
         })
         .collect();
@@ -236,17 +282,23 @@ fn render_detail(f: &mut Frame, area: Rect, title: &str, notes: &str) {
 }
 
 fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
-    let hint;
-    let msg: &str = if let Some(m) = &app.status_msg {
-        m.as_str()
+    // A toast (yank confirmation, error, ...) is styled distinctly from the
+    // plain keybinding hints so it reads as a transient notice; it auto-hides
+    // itself via `status_msg_display` once its TTL elapses.
+    let (msg, style) = if let Some(m) = app.status_msg_display() {
+        (
+            m.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
-        hint = default_hint(&app.keymap);
-        &hint
+        (
+            default_hint(&app.keymap),
+            Style::default().fg(Color::DarkGray),
+        )
     };
-    f.render_widget(
-        Paragraph::new(msg).style(Style::default().fg(Color::DarkGray)),
-        area,
-    );
+    f.render_widget(Paragraph::new(msg).style(style), area);
 }
 
 /// Build the bottom-bar hint from the live keymap (first bound key per action).
@@ -487,6 +539,7 @@ mod tests {
             TursoStore::open_memory().await,
             Keymap::load(None).unwrap(),
             Config::load(None).unwrap(),
+            Box::new(crate::clipboard::FakeClipboard::default()),
         )
         .await
         .unwrap();
@@ -540,6 +593,50 @@ mod tests {
         assert!(
             has_red_cell,
             "expected a red-styled eta cell for the overrun"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_mode_highlights_the_selected_range_with_reversed_style() {
+        let mut app = AppState::new(
+            TursoStore::open_memory().await,
+            Keymap::load(None).unwrap(),
+            Config::load(None).unwrap(),
+            Box::new(crate::clipboard::FakeClipboard::default()),
+        )
+        .await
+        .unwrap();
+
+        let svc = Services {
+            store: &app.store,
+            links: &app.store,
+            collections: &app.store,
+            query: &app.store,
+            clock: &app.clock,
+            ids: &app.ids,
+            blobs: &app.store,
+        };
+        svc.create("Hello world", None, Status::Todo, [])
+            .await
+            .unwrap();
+        app.rebuild().await;
+        app.cursor = 0;
+        app.selection = Some(crate::app::Selection {
+            anchor: 0,
+            cursor: 4,
+        });
+
+        let backend = TestBackend::new(130, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let has_reversed_cell = (0..buf.area.width).any(|x| {
+            (0..buf.area.height).any(|y| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+        });
+        assert!(
+            has_reversed_cell,
+            "expected a reversed-style cell for the active selection range"
         );
     }
 }

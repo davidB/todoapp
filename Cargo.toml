@@ -39,6 +39,14 @@ ratatui = "0.30"
 tui-input = { version = "0.15", default-features = false }
 toml = "0.8"
 ulid = "1"
+# wayland-data-control: without it, arboard only reaches X11/XWayland — on a
+# pure-Wayland session (no XWayland) `set_text` can return `Ok` without the
+# content ever reaching the real clipboard.
+arboard = { version = "3", features = ["wayland-data-control"] }
+# Already resolved transitively (tantivy/termwiz) — used directly for the OSC
+# 52 clipboard fallback (terminal escape sequence), which works even where
+# arboard can't reach a clipboard (SSH, sandboxed, unsupported compositors).
+base64 = "0.22"
 
 [workspace.lints.clippy]
 cargo = { level = "allow", priority = -1 }
