@@ -3,7 +3,7 @@ name = "todoapp-conformance"
 description = "Shared port-conformance test suite + deterministic fixtures, run against every store (spec §11)."
 edition.workspace = true
 version.workspace = true
-publish.workspace = true
+publish = false
 license.workspace = true
 repository.workspace = true
 

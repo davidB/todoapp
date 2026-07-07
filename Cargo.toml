@@ -4,10 +4,10 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.0"
+version = "0.1.0"
 license = "Apache-2.0"
 repository = "https://github.com/davidB/todoapp"
-publish = false
+publish = true
 
 [workspace.dependencies]
 todoapp-core = { path = "crates/todoapp-core" }
