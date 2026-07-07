@@ -59,13 +59,43 @@ requirements list.
 *Early build of the TUI — tree view with per-task status/progress bars, due
 dates, and ETA projection.*
 
+## Install
+
+**Homebrew** (macOS/Linux):
+
+```sh
+brew install davidB/tap/tda
+```
+
+**Shell installer** (macOS/Linux):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/davidB/todoapp/releases/latest/download/todoapp-cli-installer.sh | sh
+```
+
+**mise** (via the [`github`](https://mise.jdx.dev/dev-tools/backends/github.html)
+backend, pulls the prebuilt GitHub release binary):
+
+```sh
+mise use -g "github:davidB/todoapp[exe=tda]"
+```
+
+**From source:**
+
+```sh
+cargo install --path crates/todoapp-cli
+```
+
+Prebuilt binaries for macOS (Apple Silicon/Intel) and Linux are also available
+on the [releases page](https://github.com/davidB/todoapp/releases).
+
 ## TUI
 
 The `tda` binary (built from [`todoapp-cli`](crates/todoapp-cli)) launches a
 full-screen, keyboard-only TUI by default:
 
 ```sh
-cargo run --bin tda            # or: tda tui
+tda                             # or: tda tui
 ```
 
 | Key | Action |
