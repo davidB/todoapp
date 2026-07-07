@@ -4,6 +4,18 @@
 
 use todoapp_core::{Date, Duration};
 
+/// Overrun-aware remaining effort: re-bases on how many multiples of
+/// `estimate` the `elapsed` time has already consumed, so a task that ran
+/// past its estimate still projects a positive remaining duration instead of
+/// going negative. `remaining = n * estimate - elapsed`, `n = max(1, ceil(elapsed / estimate))`.
+pub fn remaining_effort(estimate: Duration, elapsed: Duration) -> Duration {
+    if estimate == Duration::ZERO {
+        return Duration::ZERO;
+    }
+    let n = elapsed.as_minutes().div_ceil(estimate.as_minutes()).max(1);
+    Duration::from_minutes(n * estimate.as_minutes() - elapsed.as_minutes())
+}
+
 /// The date `remaining` work finishes, starting from `today`, at
 /// `hours_per_day` capacity and `days_per_week` workdays.
 ///
@@ -38,6 +50,47 @@ pub fn project_finish_date(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remaining_effort_not_started_is_full_estimate() {
+        assert_eq!(
+            remaining_effort(Duration::from_minutes(60), Duration::ZERO),
+            Duration::from_minutes(60)
+        );
+    }
+
+    #[test]
+    fn remaining_effort_on_track_subtracts_elapsed() {
+        assert_eq!(
+            remaining_effort(Duration::from_minutes(60), Duration::from_minutes(20)),
+            Duration::from_minutes(40)
+        );
+    }
+
+    #[test]
+    fn remaining_effort_exact_is_zero() {
+        assert_eq!(
+            remaining_effort(Duration::from_minutes(60), Duration::from_minutes(60)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn remaining_effort_overrun_rebases_on_next_multiple() {
+        // elapsed = 90m over a 60m estimate: ceil(90/60) = 2 → n=2, remaining = 120-90 = 30m.
+        assert_eq!(
+            remaining_effort(Duration::from_minutes(60), Duration::from_minutes(90)),
+            Duration::from_minutes(30)
+        );
+    }
+
+    #[test]
+    fn remaining_effort_zero_estimate_is_zero() {
+        assert_eq!(
+            remaining_effort(Duration::ZERO, Duration::from_minutes(30)),
+            Duration::ZERO
+        );
+    }
 
     #[test]
     fn zero_remaining_finishes_today() {

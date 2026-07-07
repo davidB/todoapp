@@ -17,7 +17,7 @@ use crate::clipboard::Clipboard;
 use crate::config::Config;
 use crate::human_duration;
 use crate::keymap::{Action, Keymap};
-use crate::schedule::project_finish_date;
+use crate::schedule::{project_finish_date, remaining_effort};
 use crate::text_edit;
 
 // ---- Clock & IdGenerator ----------------------------------------------------
@@ -50,7 +50,8 @@ impl IdGenerator for UlidGen {
 
 /// One row in the rendered tree table. The non-tree columns are aggregates
 /// over the task + its descendants (`Services::aggregate`, spec-driven: eta
-/// is `max(due, projected finish)`, red when the projection overruns `due`).
+/// is `max(due, projected finish)`, red when the projection overruns `due`;
+/// `None` when there's no due date and no open estimate to project from).
 #[derive(Clone)]
 pub struct VisibleItem {
     pub id: Id,
@@ -218,18 +219,21 @@ async fn build_visible_items(
         let is_blocked = svc.is_blocked(&id).await;
         let agg = svc.aggregate(&id).await.unwrap_or_default();
 
-        let projected = project_finish_date(
-            today,
-            agg.remaining,
-            config.hours_per_day,
-            config.days_per_week,
-        );
-        // Overdue/eta stay day-granularity: a rendez-vous time-of-day is
-        // display-only (`VisibleItem.due`, below), never compared here.
-        let eta = Some(match agg.earliest_due {
-            Some(due) => (due.date.max(projected), projected > due.date),
-            None => (projected, false),
-        });
+        // No projection when there's nothing to project from (no due date and
+        // no open estimate anywhere in the subtree).
+        let eta = if agg.earliest_due.is_none() && agg.remaining == Duration::ZERO {
+            None
+        } else {
+            let remaining = remaining_effort(agg.remaining, agg.time_spent);
+            let projected =
+                project_finish_date(today, remaining, config.hours_per_day, config.days_per_week);
+            // Overdue/eta stay day-granularity: a rendez-vous time-of-day is
+            // display-only (`VisibleItem.due`, below), never compared here.
+            Some(match agg.earliest_due {
+                Some(due) => (due.date.max(projected), projected > due.date),
+                None => (projected, false),
+            })
+        };
         // jscpd:ignore-start
         // ponytail: `tags.iter().cloned().collect::<Vec<_>>().join(", ")` also
         // appears in `handle_event`'s edit-form setup below; only 2 occurrences
