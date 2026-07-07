@@ -228,6 +228,13 @@ macro_rules! conformance_suite {
                     agg.assignees,
                     std::collections::BTreeSet::from([Id::new("alice")])
                 );
+                // Worst-case rollup: root is Todo, a is Done, b is Todo -> Todo.
+                assert_eq!(agg.status, Status::Todo);
+
+                s.set_status(&b.id, Status::Done).await.unwrap();
+                s.set_status(&root.id, Status::Done).await.unwrap();
+                let agg = s.aggregate(&root.id).await.unwrap();
+                assert_eq!(agg.status, Status::Done);
             }
 
             #[tokio::test]

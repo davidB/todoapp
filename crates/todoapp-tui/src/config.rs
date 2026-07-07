@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, bail};
+use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 use todoapp_core::{Duration, Status};
 
@@ -51,6 +52,55 @@ fn throbber_set_from_name(name: &str) -> Option<throbber_widgets_tui::Set> {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, s)| s.clone())
+}
+
+/// (config name, `Modifier`) — single source of truth for style-string modifier names.
+const MODIFIER_NAMES: &[(&str, Modifier)] = &[
+    ("bold", Modifier::BOLD),
+    ("dim", Modifier::DIM),
+    ("italic", Modifier::ITALIC),
+    ("underlined", Modifier::UNDERLINED),
+    ("crossed_out", Modifier::CROSSED_OUT),
+    ("reversed", Modifier::REVERSED),
+];
+
+fn modifier_from_name(name: &str) -> Option<Modifier> {
+    MODIFIER_NAMES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, m)| *m)
+}
+
+/// Parses `"color"` or `"color,modifier[,modifier...]"` into a `Style` — the
+/// one string format the `[styles]` table uses throughout.
+fn parse_style(s: &str) -> anyhow::Result<Style> {
+    let mut parts = s.split(',').map(str::trim);
+    let color = parts.next().unwrap_or("reset");
+    let mut style = Style::default().fg(color
+        .parse()
+        .with_context(|| format!("unknown color {color:?}"))?);
+    for m in parts {
+        style = style.add_modifier(
+            modifier_from_name(m).with_context(|| format!("unknown modifier {m:?}"))?,
+        );
+    }
+    Ok(style)
+}
+
+/// What a color/style in `[styles]` is being applied to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Semantic {
+    /// The status icon's color only.
+    Glyph(Status),
+    /// Row/title text style for a leaf task at this status.
+    Text(Status),
+    /// `Text(s)` with `aggregate_modifier` layered on top — a row that
+    /// summarizes a subtree (has children), not a single leaf task.
+    AggregateText(Status),
+    /// The eta cell when its projected finish overruns the due date.
+    Overdue,
+    /// The cursor/selected row (tree and list views).
+    Selected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +163,17 @@ struct RawStatus {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct RawStyles {
+    glyph_colors: Option<BTreeMap<String, String>>,
+    text_styles: Option<BTreeMap<String, String>>,
+    aggregate_modifier: Option<String>,
+    overdue_color: Option<String>,
+    selected_bg: Option<String>,
+    selected_fg: Option<String>,
+    selected_modifier: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct RawConfig {
     #[serde(default)]
     columns: RawColumns,
@@ -120,6 +181,8 @@ struct RawConfig {
     schedule: RawSchedule,
     #[serde(default)]
     status: RawStatus,
+    #[serde(default)]
+    styles: RawStyles,
 }
 
 pub struct Config {
@@ -132,12 +195,39 @@ pub struct Config {
     pub status_glyphs: BTreeMap<Status, String>,
     pub throbber_set: throbber_widgets_tui::Set,
     pub spinner_interval: std::time::Duration,
+    /// Fg color for the status glyph/icon only — every status has one.
+    pub glyph_colors: BTreeMap<Status, Color>,
+    /// Sparse per-status text style override; a status absent here renders
+    /// with `Style::default()` (plain — only the glyph carries its color).
+    pub text_styles: BTreeMap<Status, Style>,
+    /// Layered on top of a `Text` style for rows that summarize a subtree.
+    pub aggregate_modifier: Modifier,
+    pub overdue_style: Style,
+    pub selected_style: Style,
+}
+
+impl Config {
+    /// Resolves a [`Semantic`] to the `Style` it should render with.
+    pub fn style_for(&self, semantic: Semantic) -> Style {
+        match semantic {
+            Semantic::Glyph(s) => {
+                Style::default().fg(self.glyph_colors.get(&s).copied().unwrap_or(Color::Reset))
+            }
+            Semantic::Text(s) => self.text_styles.get(&s).copied().unwrap_or_default(),
+            Semantic::AggregateText(s) => self
+                .style_for(Semantic::Text(s))
+                .add_modifier(self.aggregate_modifier),
+            Semantic::Overdue => self.overdue_style,
+            Semantic::Selected => self.selected_style,
+        }
+    }
 }
 
 impl Config {
     /// Load defaults, then apply `user_toml` overrides (if given) on top —
     /// each present field replaces its default; unmentioned fields keep their
     /// embedded default.
+    #[allow(clippy::too_many_lines, clippy::similar_names)]
     pub fn load(user_toml: Option<&str>) -> anyhow::Result<Self> {
         let default: RawConfig =
             toml::from_str(DEFAULT_CONFIG_TOML).context("parse embedded default config")?;
@@ -169,6 +259,31 @@ impl Config {
             .status
             .spinner_interval_ms
             .context("default config missing status.spinner_interval_ms")?;
+        let mut glyph_colors = default
+            .styles
+            .glyph_colors
+            .context("default config missing styles.glyph_colors")?;
+        let mut text_styles = default.styles.text_styles.unwrap_or_default();
+        let mut aggregate_modifier_name = default
+            .styles
+            .aggregate_modifier
+            .context("default config missing styles.aggregate_modifier")?;
+        let mut overdue_color = default
+            .styles
+            .overdue_color
+            .context("default config missing styles.overdue_color")?;
+        let mut selected_bg = default
+            .styles
+            .selected_bg
+            .context("default config missing styles.selected_bg")?;
+        let mut selected_fg = default
+            .styles
+            .selected_fg
+            .context("default config missing styles.selected_fg")?;
+        let mut selected_modifier_name = default
+            .styles
+            .selected_modifier
+            .context("default config missing styles.selected_modifier")?;
 
         if let Some(user_toml) = user_toml {
             let overrides: RawConfig = toml::from_str(user_toml).context("parse user config")?;
@@ -192,6 +307,27 @@ impl Config {
             }
             if let Some(ms) = overrides.status.spinner_interval_ms {
                 spinner_interval_ms = ms;
+            }
+            if let Some(colors) = overrides.styles.glyph_colors {
+                glyph_colors = colors;
+            }
+            if let Some(styles) = overrides.styles.text_styles {
+                text_styles = styles;
+            }
+            if let Some(m) = overrides.styles.aggregate_modifier {
+                aggregate_modifier_name = m;
+            }
+            if let Some(c) = overrides.styles.overdue_color {
+                overdue_color = c;
+            }
+            if let Some(c) = overrides.styles.selected_bg {
+                selected_bg = c;
+            }
+            if let Some(c) = overrides.styles.selected_fg {
+                selected_fg = c;
+            }
+            if let Some(m) = overrides.styles.selected_modifier {
+                selected_modifier_name = m;
             }
         }
 
@@ -221,6 +357,44 @@ impl Config {
             .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
         let throbber_set = throbber_set_from_name(&spinner_set_name)
             .with_context(|| format!("unknown status.spinner_set {spinner_set_name:?}"))?;
+        let glyph_colors = glyph_colors
+            .into_iter()
+            .map(|(name, color)| {
+                let status =
+                    status_from_name(&name).with_context(|| format!("unknown status {name:?}"))?;
+                let color: Color = color
+                    .parse()
+                    .with_context(|| format!("unknown color {color:?}"))?;
+                Ok((status, color))
+            })
+            .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        let text_styles = text_styles
+            .into_iter()
+            .map(|(name, style)| {
+                let status =
+                    status_from_name(&name).with_context(|| format!("unknown status {name:?}"))?;
+                Ok((status, parse_style(&style)?))
+            })
+            .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        let aggregate_modifier =
+            modifier_from_name(&aggregate_modifier_name).with_context(|| {
+                format!("unknown styles.aggregate_modifier {aggregate_modifier_name:?}")
+            })?;
+        let overdue_style = Style::default().fg(overdue_color
+            .parse()
+            .with_context(|| format!("unknown color {overdue_color:?}"))?);
+        let selected_style = Style::default()
+            .bg(selected_bg
+                .parse()
+                .with_context(|| format!("unknown color {selected_bg:?}"))?)
+            .fg(selected_fg
+                .parse()
+                .with_context(|| format!("unknown color {selected_fg:?}"))?)
+            .add_modifier(
+                modifier_from_name(&selected_modifier_name).with_context(|| {
+                    format!("unknown styles.selected_modifier {selected_modifier_name:?}")
+                })?,
+            );
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let minutes = (hours_per_day * 60.0).round() as u32;
@@ -232,6 +406,11 @@ impl Config {
             status_glyphs,
             throbber_set,
             spinner_interval: std::time::Duration::from_millis(spinner_interval_ms),
+            glyph_colors,
+            text_styles,
+            aggregate_modifier,
+            overdue_style,
+            selected_style,
         })
     }
 }
@@ -259,6 +438,51 @@ mod tests {
     #[test]
     fn unknown_column_is_an_error() {
         let user = r#"columns.order = ["bogus"]"#;
+        assert!(Config::load(Some(user)).is_err());
+    }
+
+    #[test]
+    fn default_styles_resolve() {
+        let config = Config::load(None).expect("default config must parse");
+        for status in [
+            Status::Draft,
+            Status::Todo,
+            Status::Wip,
+            Status::Paused,
+            Status::Done,
+        ] {
+            assert!(config.glyph_colors.contains_key(&status));
+        }
+        assert_eq!(
+            config.style_for(Semantic::Text(Status::Done)),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::CROSSED_OUT)
+        );
+        assert_eq!(
+            config.style_for(Semantic::Text(Status::Todo)),
+            Style::default()
+        );
+        assert_eq!(
+            config.style_for(Semantic::AggregateText(Status::Todo)),
+            Style::default().add_modifier(Modifier::DIM)
+        );
+        assert_eq!(
+            config.style_for(Semantic::Overdue),
+            Style::default().fg(Color::Red)
+        );
+        assert_eq!(
+            config.style_for(Semantic::Selected),
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn unknown_style_color_is_an_error() {
+        let user = r#"styles.overdue_color = "bogus""#;
         assert!(Config::load(Some(user)).is_err());
     }
 

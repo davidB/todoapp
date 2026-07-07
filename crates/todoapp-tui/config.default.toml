@@ -28,3 +28,24 @@ draft = "○"
 todo = "◇"
 paused = "⏸"
 done = "✔"
+
+[styles]
+# Fg color for the status glyph/icon only — every status needs one. Any
+# string ratatui::style::Color accepts: named ("yellow", "darkgray"), ANSI
+# index ("10"), or hex ("#ff0000").
+glyph_colors = { draft = "darkgray", todo = "reset", wip = "yellow", paused = "cyan", done = "green" }
+# Sparse per-status *text* override: "color" or "color,modifier[,modifier...]".
+# Statuses not listed here render with plain/default text — only the glyph
+# then carries their identity color. Done is deliberately muted so remaining
+# (non-Done) work visually stands out more than what's already finished.
+text_styles = { done = "darkgray,crossed_out" }
+# Layered on top of a row's text style when that row summarizes a subtree
+# (has children), so aggregate rows read as distinct from a leaf task at the
+# same status.
+aggregate_modifier = "dim"
+# The eta column's color when the projected finish overruns the due date.
+overdue_color = "red"
+# The cursor/selected row's highlight (tree and list views).
+selected_bg = "blue"
+selected_fg = "white"
+selected_modifier = "bold"

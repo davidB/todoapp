@@ -15,7 +15,7 @@ use todoapp_core::Status;
 use crate::app::{
     AppState, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View, VisibleItem,
 };
-use crate::config::ColumnKind;
+use crate::config::{ColumnKind, Semantic};
 use crate::keymap::{Action, Keymap};
 use crate::text_edit;
 
@@ -84,12 +84,7 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
     let table = Table::new(rows, widths)
         .header(header)
         .block(Block::default().borders(Borders::ALL).title(" tda "))
-        .row_highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        );
+        .row_highlight_style(app.config.style_for(Semantic::Selected));
     let mut state = TableState::default().with_selected(Some(app.cursor));
     f.render_stateful_widget(table, area, &mut state);
 }
@@ -109,11 +104,23 @@ fn item_row(
     tree_col_width: u16,
     is_cursor: bool,
 ) -> Row<'static> {
-    let tree_cell = Cell::from(tree_cell_line(item, app, tree_col_width, is_cursor))
-        .style(tree_status_style(item.status));
+    let tree_cell = Cell::from(tree_cell_line(item, app, tree_col_width, is_cursor));
     let cells =
         std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c, app)));
     Row::new(cells)
+}
+
+/// The status text style for `item`'s title only — `AggregateText` (dimmed)
+/// for rows summarizing a subtree, `Text` for a leaf task. Deliberately not
+/// applied to the whole row: only the title should look muted/crossed-out
+/// for e.g. `Done`, not the due/eta/assignee/... columns alongside it.
+fn title_style(item: &VisibleItem, app: &AppState) -> Style {
+    let semantic = if item.has_children {
+        Semantic::AggregateText(item.agg_status)
+    } else {
+        Semantic::Text(item.status)
+    };
+    app.config.style_for(semantic)
 }
 
 fn tree_cell_line(
@@ -129,17 +136,28 @@ fn tree_cell_line(
         "· "
     };
     let icon = status_icon(item.status, app);
-    let prefix = format!("{indent}{arrow}{icon} ");
+    let prefix = format!("{indent}{arrow}");
     let badge_width = if item.is_blocked { 4 } else { 0 }; // " [!]"
     let title_width = usize::from(tree_col_width)
         .saturating_sub(prefix.chars().count())
+        .saturating_sub(icon.chars().count() + 1)
         .saturating_sub(badge_width)
         .max(1);
-    let mut spans = vec![Span::raw(prefix)];
-    match (is_cursor, app.selection) {
-        (true, Some(sel)) => spans.extend(selection_spans(&item.title, title_width, sel)),
-        _ => spans.extend(crate::markdown::render_inline(&item.title, title_width)),
-    }
+    let mut spans = vec![
+        Span::raw(prefix),
+        Span::styled(icon, app.config.style_for(Semantic::Glyph(item.status))),
+        Span::raw(" "),
+    ];
+    let title_base = title_style(item, app);
+    let title_spans = match (is_cursor, app.selection) {
+        (true, Some(sel)) => selection_spans(&item.title, title_width, sel),
+        _ => crate::markdown::render_inline(&item.title, title_width),
+    };
+    spans.extend(
+        title_spans
+            .into_iter()
+            .map(|s| Span::styled(s.content, title_base.patch(s.style))),
+    );
     if item.is_blocked {
         spans.push(Span::raw(" [!]"));
     }
@@ -176,13 +194,21 @@ fn selection_spans(title: &str, width: usize, sel: Selection) -> Vec<Span<'stati
 
 fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'static> {
     match kind {
-        ColumnKind::Status => Cell::from(progress_bar(item.done, item.total)),
+        ColumnKind::Status => Cell::from(progress_bar(
+            item.done,
+            item.total,
+            app.config
+                .glyph_colors
+                .get(&Status::Done)
+                .copied()
+                .unwrap_or(Color::Green),
+        )),
         ColumnKind::Due => Cell::from(item.due.map_or("-".to_string(), |d| d.to_string())),
         ColumnKind::Eta => match item.eta {
             Some((date, overrun)) => {
                 let cell = Cell::from(date.to_string());
                 if overrun {
-                    cell.style(Style::default().fg(Color::Red))
+                    cell.style(app.config.style_for(Semantic::Overdue))
                 } else {
                     cell
                 }
@@ -214,12 +240,18 @@ fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'
     }
 }
 
-/// A small `[####------] d/t` progress bar, status-count based (ignores estimate).
-fn progress_bar(done: usize, total: usize) -> String {
+/// A small `[####------] d/t` progress bar, status-count based (ignores
+/// estimate). The filled run is colored `done_color` (the `Done` glyph
+/// color), so the bar and the glyphs read as one consistent palette.
+fn progress_bar(done: usize, total: usize, done_color: Color) -> Line<'static> {
     const WIDTH: usize = 6;
     let filled = (done * WIDTH).checked_div(total).unwrap_or(0);
-    let bar: String = "█".repeat(filled) + &"░".repeat(WIDTH - filled);
-    format!("{bar} {done}/{total}")
+    let filled_run = "█".repeat(filled);
+    let rest = format!("{} {done}/{total}", "░".repeat(WIDTH - filled));
+    Line::from(vec![
+        Span::styled(filled_run, Style::default().fg(done_color)),
+        Span::raw(rest),
+    ])
 }
 
 fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::QueryHit]) {
@@ -234,28 +266,32 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
                 format!("[{}] ", hit.path.join(" › "))
             };
             let icon = status_icon(hit.task.status, app);
-            let prefix = format!("{breadcrumb}{icon} ");
+            let prefix = breadcrumb;
             let title_width = usize::from(inner_width)
                 .saturating_sub(prefix.chars().count())
+                .saturating_sub(icon.chars().count() + 1)
                 .max(1);
-            let mut spans = vec![Span::raw(prefix)];
-            match (i == app.cursor, app.selection) {
-                (true, Some(sel)) => {
-                    spans.extend(selection_spans(&hit.task.title, title_width, sel));
-                }
-                _ => spans.extend(crate::markdown::render_inline(&hit.task.title, title_width)),
-            }
-            ListItem::new(Line::from(spans)).style(status_style(hit.task.status))
+            let mut spans = vec![
+                Span::raw(prefix),
+                Span::styled(icon, app.config.style_for(Semantic::Glyph(hit.task.status))),
+                Span::raw(" "),
+            ];
+            let title_base = app.config.style_for(Semantic::Text(hit.task.status));
+            let title_spans = match (i == app.cursor, app.selection) {
+                (true, Some(sel)) => selection_spans(&hit.task.title, title_width, sel),
+                _ => crate::markdown::render_inline(&hit.task.title, title_width),
+            };
+            spans.extend(
+                title_spans
+                    .into_iter()
+                    .map(|s| Span::styled(s.content, title_base.patch(s.style))),
+            );
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" results "))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(app.config.style_for(Semantic::Selected));
     let mut state = ListState::default().with_selected(Some(app.cursor));
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, &mut state);
@@ -500,26 +536,6 @@ fn status_icon(s: Status, app: &AppState) -> String {
     }
 }
 
-/// Tree-column style: gray for `done` tasks, default text color otherwise.
-fn tree_status_style(s: Status) -> Style {
-    match s {
-        Status::Done => Style::default().fg(Color::Gray),
-        Status::Draft | Status::Todo | Status::Wip | Status::Paused => Style::default(),
-    }
-}
-
-fn status_style(s: Status) -> Style {
-    match s {
-        Status::Draft => Style::default().fg(Color::DarkGray),
-        Status::Todo => Style::default(),
-        Status::Wip => Style::default().fg(Color::Yellow),
-        Status::Paused => Style::default().fg(Color::Cyan),
-        Status::Done => Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::DIM),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::Terminal;
@@ -603,6 +619,81 @@ mod tests {
         assert!(
             has_reversed_cell,
             "expected a reversed-style cell for the active selection range"
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_row_dims_worst_case_status_and_leaf_glyph_differs_from_text() {
+        let mut app = new_test_app().await;
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        let root = svc.create("Root", None, Status::Todo, []).await.unwrap();
+        svc.create("Done child", Some(&root.id), Status::Done, [])
+            .await
+            .unwrap();
+        svc.create("Todo child", Some(&root.id), Status::Todo, [])
+            .await
+            .unwrap();
+        app.rebuild().await;
+        app.expanded.insert(root.id.clone());
+        app.rebuild().await;
+        // Cursor on "Todo child" so the selection highlight (which overrides
+        // fg/modifier) doesn't mask the Root/Done-child styling under test.
+        app.cursor = app
+            .items
+            .iter()
+            .position(|i| i.title == "Todo child")
+            .unwrap();
+
+        let buf = render_to_buffer(&app);
+        let row_text =
+            |y: u16| -> String { (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect() };
+
+        // Root rolls up to Todo (worst-case among Done/Todo children); Todo's
+        // text style is plain, but the aggregate modifier (DIM) must still
+        // show up on the parent row.
+        let root_y = (0..buf.area.height)
+            .find(|&y| row_text(y).contains("Root"))
+            .expect("Root row must be rendered");
+        let root_row_dimmed =
+            (0..buf.area.width).any(|x| buf[(x, root_y)].modifier.contains(Modifier::DIM));
+        assert!(
+            root_row_dimmed,
+            "expected the aggregate row's title to carry the DIM modifier"
+        );
+        // ...but only the title, not the whole row: the rightmost content
+        // column (the "id" column, unrelated to status) must stay plain.
+        let last_col_x = buf.area.width - 2; // inside the block's right border
+        assert!(
+            !buf[(last_col_x, root_y)].modifier.contains(Modifier::DIM),
+            "expected only the title to be dimmed, not the whole row"
+        );
+
+        // The Done leaf's glyph (✔) is green while its title text is gray +
+        // crossed-out — two different cells, not one shared color.
+        let done_y = (0..buf.area.height)
+            .find(|&y| row_text(y).contains("Done child"))
+            .expect("Done child row must be rendered");
+        let glyph_x = (0..buf.area.width)
+            .find(|&x| buf[(x, done_y)].symbol() == "✔")
+            .expect("glyph cell must be rendered");
+        assert_eq!(buf[(glyph_x, done_y)].fg, Color::Green);
+        let title_x = (0..buf.area.width)
+            .find(|&x| buf[(x, done_y)].symbol() == "D" && x > glyph_x)
+            .expect("title cell must be rendered");
+        assert_eq!(buf[(title_x, done_y)].fg, Color::DarkGray);
+        assert!(
+            buf[(title_x, done_y)]
+                .modifier
+                .contains(Modifier::CROSSED_OUT)
+        );
+
+        // The progress bar's filled run uses the same color as the Done glyph.
+        let has_green_bar_cell = (0..buf.area.width)
+            .any(|x| (0..buf.area.height).any(|y| buf[(x, y)].fg == Color::Green));
+        assert!(
+            has_green_bar_cell,
+            "expected a green-filled progress bar cell"
         );
     }
 }

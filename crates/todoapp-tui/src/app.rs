@@ -57,6 +57,9 @@ pub struct VisibleItem {
     pub id: Id,
     pub title: String,
     pub status: Status,
+    /// Worst-case rolled-up status over the task + its descendants — only
+    /// meaningful (differs from `status`) when `has_children`.
+    pub agg_status: Status,
     pub depth: usize,
     pub has_children: bool,
     pub is_expanded: bool,
@@ -251,6 +254,7 @@ async fn build_visible_items(
             id: id.clone(),
             title: snap.title,
             status: snap.status,
+            agg_status: agg.status,
             depth,
             has_children,
             is_expanded,

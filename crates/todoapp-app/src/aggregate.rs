@@ -13,7 +13,7 @@ use todoapp_core::{
 
 use crate::service::{Error, Services};
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Aggregate {
     pub total: usize,
     pub done: usize,
@@ -25,6 +25,25 @@ pub struct Aggregate {
     pub remaining: Duration,
     pub earliest_due: Option<Due>,
     pub assignees: BTreeSet<Id>,
+    /// Worst-case (lowest-`rank`) `Status` over the task + its descendants —
+    /// only `Done` when every task in the subtree is `Done`.
+    pub status: Status,
+}
+
+impl Default for Aggregate {
+    fn default() -> Self {
+        Self {
+            total: 0,
+            done: 0,
+            progress: 0.0,
+            time_spent: Duration::ZERO,
+            estimate: Duration::ZERO,
+            remaining: Duration::ZERO,
+            earliest_due: None,
+            assignees: BTreeSet::new(),
+            status: Status::Draft,
+        }
+    }
 }
 
 impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
@@ -35,12 +54,18 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         // Each capability reads only its own component (spec §3 per-cap roll-up).
         let mut ids = self.descendants(id).await;
         ids.insert(id.clone());
+        let mut worst: Option<Status> = None;
         for tid in ids {
             agg.total += 1;
             let status = self.store.get::<Status>(&tid).await;
             if status == Some(Status::Done) {
                 agg.done += 1;
             }
+            let status = status.unwrap_or(Status::Draft);
+            worst = Some(match worst {
+                Some(w) if w.rank() <= status.rank() => w,
+                _ => status,
+            });
             agg.time_spent += self
                 .store
                 .get::<TimeSpent>(&tid)
@@ -52,7 +77,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .await
                 .map_or(Duration::ZERO, |e| e.0);
             agg.estimate += estimate;
-            if status != Some(Status::Done) {
+            if status != Status::Done {
                 agg.remaining += estimate;
             }
             if let Some(Schedule(due)) = self.store.get::<Schedule>(&tid).await {
@@ -70,6 +95,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         } else {
             0.0
         };
+        agg.status = worst.unwrap_or(Status::Draft);
         Ok(agg)
     }
 }
