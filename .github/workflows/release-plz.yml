@@ -8,21 +8,22 @@ env:
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
 
+permissions:
+  contents: write
+  pull-requests: write
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-pr:
     runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'davidB' }}
-    permissions:
-      contents: write
-      pull-requests: write
-    concurrency:
-      group: release-plz-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: dtolnay/rust-toolchain@stable
       - uses: release-plz/action@v0.5
         with:
@@ -33,15 +34,12 @@ jobs:
   release:
     runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'davidB' }}
-    permissions:
-      contents: write
-      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: dtolnay/rust-toolchain@stable
       - uses: release-plz/action@v0.5
         with:
