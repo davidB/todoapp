@@ -4,7 +4,7 @@
 //! earliest due, Assignments → union of assignees (spec §13 Q3 default:
 //! progress = done/total).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use todoapp_core::{
     Assignments, ComponentStore, Due, Duration, Estimate, Id, Schedule, Status, TaskEntityStore,
@@ -28,6 +28,8 @@ pub struct Aggregate {
     /// Worst-case (lowest-`rank`) `Status` over the task + its descendants —
     /// only `Done` when every task in the subtree is `Done`.
     pub status: Status,
+    /// Count of subtree tasks at each `Status`.
+    pub by_status: BTreeMap<Status, usize>,
 }
 
 impl Default for Aggregate {
@@ -42,6 +44,7 @@ impl Default for Aggregate {
             earliest_due: None,
             assignees: BTreeSet::new(),
             status: Status::Draft,
+            by_status: BTreeMap::new(),
         }
     }
 }
@@ -62,6 +65,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 agg.done += 1;
             }
             let status = status.unwrap_or(Status::Draft);
+            *agg.by_status.entry(status).or_insert(0) += 1;
             worst = Some(match worst {
                 Some(w) if w.rank() <= status.rank() => w,
                 _ => status,

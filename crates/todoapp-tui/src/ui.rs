@@ -1,5 +1,7 @@
 //! Pure rendering: takes `&AppState`, draws to `Frame`. No mutations.
 
+use std::collections::BTreeMap;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Position, Rect},
@@ -15,7 +17,7 @@ use todoapp_core::Status;
 use crate::app::{
     AppState, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View, VisibleItem,
 };
-use crate::config::{ColumnKind, Semantic};
+use crate::config::{ColumnKind, Config, Semantic};
 use crate::keymap::{Action, Keymap};
 use crate::text_edit;
 
@@ -91,7 +93,10 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
 
 fn column_width(kind: ColumnKind) -> u16 {
     match kind {
-        ColumnKind::Status | ColumnKind::Due | ColumnKind::Eta => 10,
+        // `PROGRESS_BAR_WIDTH` (6) + " " + up to "999/999" (7), so subtree
+        // counts up to 3 digits each don't get silently truncated.
+        ColumnKind::Status => 14,
+        ColumnKind::Due | ColumnKind::Eta => 10,
         ColumnKind::Assignee | ColumnKind::Tags => 16,
         ColumnKind::Estimate | ColumnKind::Elapsed | ColumnKind::Id => 8,
     }
@@ -195,13 +200,10 @@ fn selection_spans(title: &str, width: usize, sel: Selection) -> Vec<Span<'stati
 fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'static> {
     match kind {
         ColumnKind::Status => Cell::from(progress_bar(
+            &item.by_status,
             item.done,
             item.total,
-            app.config
-                .glyph_colors
-                .get(&Status::Done)
-                .copied()
-                .unwrap_or(Color::Green),
+            &app.config,
         )),
         ColumnKind::Due => Cell::from(item.due.map_or("-".to_string(), |d| d.to_string())),
         ColumnKind::Eta => match item.eta {
@@ -240,18 +242,114 @@ fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'
     }
 }
 
-/// A small `[####------] d/t` progress bar, status-count based (ignores
-/// estimate). The filled run is colored `done_color` (the `Done` glyph
-/// color), so the bar and the glyphs read as one consistent palette.
-fn progress_bar(done: usize, total: usize, done_color: Color) -> Line<'static> {
-    const WIDTH: usize = 6;
-    let filled = (done * WIDTH).checked_div(total).unwrap_or(0);
-    let filled_run = "█".repeat(filled);
-    let rest = format!("{} {done}/{total}", "░".repeat(WIDTH - filled));
-    Line::from(vec![
-        Span::styled(filled_run, Style::default().fg(done_color)),
-        Span::raw(rest),
-    ])
+const PROGRESS_BAR_WIDTH: usize = 6;
+
+/// A small `[######] d/t` progress bar: one proportional segment per
+/// `Status` in the subtree, ordered Done..Draft (finished work at the left),
+/// colored with that status's glyph color so the bar and the glyphs read as
+/// one consistent palette. Blocked tasks aren't called out separately — a
+/// blocked task is still a Draft/Todo/Paused task and renders as such.
+fn progress_bar(
+    by_status: &BTreeMap<Status, usize>,
+    done: usize,
+    total: usize,
+    config: &Config,
+) -> Line<'static> {
+    if total == 0 {
+        return Line::from(format!("{} {done}/{total}", "░".repeat(PROGRESS_BAR_WIDTH)));
+    }
+    let mut spans = Vec::new();
+    for (status, width) in segment_widths(by_status, total, PROGRESS_BAR_WIDTH) {
+        if width == 0 {
+            continue;
+        }
+        spans.push(Span::styled(
+            "█".repeat(width),
+            config.style_for(Semantic::Glyph(status)),
+        ));
+    }
+    spans.push(Span::raw(format!(" {done}/{total}")));
+    Line::from(spans)
+}
+
+/// Apportions `width` bar cells across `by_status` counts. Every present
+/// status gets at least 1 cell — pure proportional rounding can otherwise
+/// erase a status entirely (e.g. 1 wip task out of 15 at width 6 rounds to
+/// 0) — then the rest is distributed by largest remainder so segment widths
+/// always sum to exactly `width`. Always fits: at most 5 `Status` variants
+/// exist and `width` (6) leaves at least 1 cell of slack after the minimums.
+/// Iterates in reverse rank order (Done first, Draft last) — `by_status` is
+/// a `BTreeMap<Status, _>` sorted Draft..Done, so `.rev()` gives the display
+/// order.
+fn segment_widths(
+    by_status: &BTreeMap<Status, usize>,
+    total: usize,
+    width: usize,
+) -> Vec<(Status, usize)> {
+    let mut widths: Vec<(Status, usize)> = by_status.iter().rev().map(|(&s, _)| (s, 1)).collect();
+    let leftover = width.saturating_sub(widths.len());
+    if leftover > 0 {
+        let mut remainders: Vec<(usize, usize)> = Vec::new();
+        let mut assigned = 0;
+        for i in 0..widths.len() {
+            let scaled = by_status[&widths[i].0] * leftover;
+            widths[i].1 += scaled / total;
+            assigned += scaled / total;
+            remainders.push((i, scaled % total));
+        }
+        let mut deficit = leftover - assigned;
+        remainders.sort_by_key(|&(_, rem)| std::cmp::Reverse(rem));
+        for (i, _) in remainders {
+            if deficit == 0 {
+                break;
+            }
+            widths[i].1 += 1;
+            deficit -= 1;
+        }
+    }
+    widths
+}
+
+#[cfg(test)]
+mod progress_bar_tests {
+    use super::*;
+
+    #[test]
+    fn segment_widths_sum_to_width() {
+        let by_status = BTreeMap::from([(Status::Draft, 1), (Status::Todo, 1), (Status::Done, 1)]);
+        let widths = segment_widths(&by_status, 3, 6);
+        assert_eq!(widths.iter().map(|&(_, w)| w).sum::<usize>(), 6);
+        assert_eq!(
+            widths,
+            vec![(Status::Done, 2), (Status::Todo, 2), (Status::Draft, 2)]
+        );
+    }
+
+    #[test]
+    fn segment_widths_handles_uneven_split() {
+        let by_status = BTreeMap::from([(Status::Draft, 1), (Status::Todo, 2)]);
+        let widths = segment_widths(&by_status, 3, 6);
+        assert_eq!(widths.iter().map(|&(_, w)| w).sum::<usize>(), 6);
+        assert_eq!(widths, vec![(Status::Todo, 4), (Status::Draft, 2)]);
+    }
+
+    #[test]
+    fn segment_widths_gives_a_rare_status_at_least_one_cell() {
+        let by_status = BTreeMap::from([(Status::Draft, 12), (Status::Wip, 1), (Status::Done, 2)]);
+        let widths = segment_widths(&by_status, 15, 6);
+        assert_eq!(widths.iter().map(|&(_, w)| w).sum::<usize>(), 6);
+        assert_eq!(
+            widths,
+            vec![(Status::Done, 2), (Status::Wip, 1), (Status::Draft, 3)]
+        );
+    }
+
+    #[test]
+    fn progress_bar_empty_subtree_is_all_hollow() {
+        let config = Config::load(None).unwrap();
+        let line = progress_bar(&BTreeMap::new(), 0, 0, &config);
+        assert_eq!(line.to_string(), "░░░░░░ 0/0");
+    }
 }
 
 fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::QueryHit]) {

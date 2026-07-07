@@ -1,6 +1,6 @@
 //! Application state and event handling for the tda TUI.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -66,6 +66,7 @@ pub struct VisibleItem {
     pub is_blocked: bool,
     pub done: usize,
     pub total: usize,
+    pub by_status: BTreeMap<Status, usize>,
     pub due: Option<Due>,
     /// `(projected/effective eta date, true if it overruns `due`)`.
     pub eta: Option<(Date, bool)>,
@@ -261,6 +262,7 @@ async fn build_visible_items(
             is_blocked,
             done: agg.done,
             total: agg.total,
+            by_status: agg.by_status,
             due: agg.earliest_due,
             eta,
             assignees,
