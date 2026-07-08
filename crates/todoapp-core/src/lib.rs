@@ -8,6 +8,7 @@ mod ports;
 mod query;
 mod short_id;
 mod temporal;
+pub mod testing;
 
 pub use command::*;
 pub use model::*;

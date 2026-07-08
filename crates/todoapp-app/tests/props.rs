@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use todoapp_app::{Anchor, Services};
-use todoapp_conformance::{FixedClock, SeqIds};
+use todoapp_core::testing::{FixedClock, SeqIds};
 use todoapp_core::{Id, LinkKind, Status};
 use todoapp_store_mem::MemStore;
 

@@ -1,7 +1,12 @@
 [workspace]
 changelog_update = true
 changelog_config = "cliff.toml"
+custom_major_increment_regex = "^major"
+custom_minor_increment_regex = "^minor|^enhancement|^🎉"
+features_always_increment_minor = true
 git_release_enable = false # cargo-dist creates the GitHub Release from the tag
+git_release_name = "{{ version }}"
 git_tag_enable = true
 git_tag_name = "{{ version }}"
-publish = false
+publish = true
+semver_check = false # TODO enable when the lib will be used out of this cli (=> increase CI time)git_release_enable = false # the release is build by the (cargo-)dist from tag

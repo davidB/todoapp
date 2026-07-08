@@ -4,7 +4,7 @@
 //! issue reference, link attachment, archived task).
 
 use todoapp_app::Services;
-use todoapp_conformance::{FixedClock, SeqIds};
+use todoapp_core::testing::{FixedClock, SeqIds};
 use todoapp_core::{Archived, ComponentStore, Due, Status};
 use todoapp_store_mem::MemStore;
 

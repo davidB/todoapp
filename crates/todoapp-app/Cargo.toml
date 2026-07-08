@@ -16,6 +16,5 @@ jiff.workspace = true
 
 [dev-dependencies]
 todoapp-store-mem.workspace = true
-todoapp-conformance.workspace = true
 proptest.workspace = true
 tokio.workspace = true

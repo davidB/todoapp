@@ -1,52 +1,10 @@
 //! Port-conformance suite (spec §11): the M1 use-case tests, parametrized over
-//! the store. Each store crate's test target invokes [`conformance_suite!`] with
-//! a fresh-store constructor; the *same* bodies run against `todoapp-store-mem` and
-//! `todoapp-store-turso`, proving they are interchangeable behind the ports.
-//!
-//! Also home to the deterministic `Clock`/`IdGenerator` fixtures (store-agnostic,
-//! so both adapters' tests share them).
-
-use std::cell::RefCell;
-
-use todoapp_core::{Clock, Date, Id, IdGenerator, Timestamp};
-
-/// Sequential id generator: `t1`, `t2`, … Deterministic for tests.
-#[derive(Default)]
-pub struct SeqIds {
-    n: RefCell<u64>,
-}
-
-impl IdGenerator for SeqIds {
-    fn next_id(&self) -> Id {
-        let mut n = self.n.borrow_mut();
-        *n += 1;
-        Id::new(format!("t{n}"))
-    }
-}
-
-/// Clock pinned to a fixed instant and date — deterministic for tests.
-pub struct FixedClock {
-    pub now: Timestamp,
-    pub today: Date,
-}
-
-impl Default for FixedClock {
-    fn default() -> Self {
-        Self {
-            now: Timestamp::from_millisecond(0),
-            today: Date::parse("2026-06-22").unwrap(),
-        }
-    }
-}
-
-impl Clock for FixedClock {
-    fn now(&self) -> Timestamp {
-        self.now
-    }
-    fn today(&self) -> Date {
-        self.today
-    }
-}
+//! the store. This crate's own `tests/` targets invoke [`conformance_suite!`]
+//! with a fresh-store constructor for each adapter; the *same* bodies run
+//! against `todoapp-store-mem` and `todoapp-store-turso`, proving they are
+//! interchangeable behind the ports. This crate depends on the adapters
+//! (rather than being depended on by them), keeping the workspace dependency
+//! graph acyclic.
 
 /// Generate the conformance tests for a store. `$make` is an expression that
 /// yields a fresh store implementing every port (evaluated in `async` context,
@@ -58,10 +16,10 @@ macro_rules! conformance_suite {
             #![allow(unused_imports)]
             use super::*;
             use ::todoapp_app::{Anchor, Services};
+            use ::todoapp_core::testing::{FixedClock, SeqIds};
             use ::todoapp_core::{
                 Date, Dir, DueFilter, Duration, Filter, Id, Query, SortField, SortKey, Status,
             };
-            use $crate::{FixedClock, SeqIds};
 
             /// Fresh store + fixtures, kept alive by the caller's locals.
             macro_rules! svc {

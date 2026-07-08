@@ -12,8 +12,3 @@ todoapp-core.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 turso.workspace = true
-
-[dev-dependencies]
-todoapp-app.workspace = true
-todoapp-conformance.workspace = true
-tokio.workspace = true

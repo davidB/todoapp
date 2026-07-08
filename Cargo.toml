@@ -11,12 +11,12 @@ homepage = "https://github.com/davidB/todoapp"
 publish = true
 
 [workspace.dependencies]
-todoapp-core = { path = "crates/todoapp-core" }
-todoapp-app = { path = "crates/todoapp-app" }
+todoapp-core = { version = "0.1.0", path = "crates/todoapp-core" }
+todoapp-app = { version = "0.1.0", path = "crates/todoapp-app" }
 todoapp-store-mem = { path = "crates/todoapp-store-mem" }
-todoapp-store-turso = { path = "crates/todoapp-store-turso" }
+todoapp-store-turso = { version = "0.1.0", path = "crates/todoapp-store-turso" }
 todoapp-conformance = { path = "crates/todoapp-conformance" }
-todoapp-tui = { path = "crates/todoapp-tui" }
+todoapp-tui = { version = "0.1.0", path = "crates/todoapp-tui" }
 # Turso: the async embedded SQLite-compatible engine (spec §6). Beta. Adapter-only.
 turso = "0.7.0-pre.10"
 

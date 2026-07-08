@@ -9,3 +9,9 @@ repository.workspace = true
 
 [dependencies]
 todoapp-core.workspace = true
+
+[dev-dependencies]
+todoapp-app.workspace = true
+todoapp-store-mem.workspace = true
+todoapp-store-turso.workspace = true
+tokio.workspace = true

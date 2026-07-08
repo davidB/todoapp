@@ -3797,7 +3797,6 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
- "todoapp-conformance",
  "todoapp-core",
  "todoapp-store-mem",
  "tokio",
@@ -3821,7 +3820,11 @@ dependencies = [
 name = "todoapp-conformance"
 version = "0.1.0"
 dependencies = [
+ "todoapp-app",
  "todoapp-core",
+ "todoapp-store-mem",
+ "todoapp-store-turso",
+ "tokio",
 ]
 
 [[package]]
@@ -3840,10 +3843,7 @@ name = "todoapp-store-mem"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "todoapp-app",
- "todoapp-conformance",
  "todoapp-core",
- "tokio",
 ]
 
 [[package]]
@@ -3852,10 +3852,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde_json",
- "todoapp-app",
- "todoapp-conformance",
  "todoapp-core",
- "tokio",
  "turso",
 ]
 
