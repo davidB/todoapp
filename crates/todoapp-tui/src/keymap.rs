@@ -35,6 +35,7 @@ pub enum Action {
     Quit,
     Select,
     Yank,
+    Delete,
 }
 
 impl Action {
@@ -91,6 +92,7 @@ impl Action {
             "select title text (character range)",
         ),
         ("yank", Action::Yank, "yank (copy) title to clipboard"),
+        ("delete", Action::Delete, "delete task (confirm)"),
     ];
 
     fn from_name(name: &str) -> Option<Action> {

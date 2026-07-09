@@ -157,6 +157,12 @@ enum Cmd {
         #[arg(long, conflicts_with = "before")]
         after: Option<String>,
     },
+    /// Delete a task. Fails if it has children unless --recursive.
+    Rm {
+        id: String,
+        #[arg(long)]
+        recursive: bool,
+    },
     /// Add a dependency edge between tasks.
     Link {
         from: String,
@@ -315,6 +321,11 @@ async fn main() -> anyhow::Result<()> {
                 _ => None,
             };
             svc.move_task(&Id::new(id), &Id::new(to), anchor).await?;
+            print_json(&serde_json::json!({"ok": true}))?;
+        }
+
+        Cmd::Rm { id, recursive } => {
+            svc.delete_task(&Id::new(id), recursive).await?;
             print_json(&serde_json::json!({"ok": true}))?;
         }
 

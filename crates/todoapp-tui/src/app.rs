@@ -160,6 +160,8 @@ pub struct AppState {
     pub view: View,
     /// Active input modal: (mode, typed text).
     pub input: Option<(InputMode, Input)>,
+    /// Pending delete confirmation: (task id, has-children flag).
+    pub confirm_delete: Option<(Id, bool)>,
     /// Active task edit form (title/notes/due/estimate/assignee), if open.
     pub edit_form: Option<TaskEditForm>,
     /// Active char-range selection on the current row's title (Tree/List),
@@ -364,6 +366,7 @@ impl AppState {
             expanded: HashSet::new(),
             view: View::Tree,
             input: None,
+            confirm_delete: None,
             edit_form: None,
             selection: None,
             status_msg: None,
@@ -483,6 +486,9 @@ impl AppState {
         }
         if self.input.is_some() {
             return self.handle_input_key(code, modifiers, width).await;
+        }
+        if self.confirm_delete.is_some() {
+            return self.handle_confirm_delete_key(code).await;
         }
         if self.selection.is_some() {
             return Ok(self.handle_select_key(code));
@@ -622,6 +628,12 @@ impl AppState {
                             focus: 0,
                         });
                     }
+                }
+            }
+            // Delete (tree only) — arms the confirm modal, actual delete on 'y'.
+            Action::Delete if in_tree => {
+                if let Some(item) = self.items.get(self.cursor) {
+                    self.confirm_delete = Some((item.id.clone(), item.has_children));
                 }
             }
             // View rendered title/notes (tree only)
@@ -1022,6 +1034,26 @@ impl AppState {
             Err(e) => self.set_status(format!("claim: {e}")),
         }
         Ok(())
+    }
+
+    async fn handle_confirm_delete_key(&mut self, code: KeyCode) -> anyhow::Result<bool> {
+        let Some((id, has_children)) = self.confirm_delete.take() else {
+            return Ok(true);
+        };
+        if let KeyCode::Char('y' | 'Y') = code {
+            let result = {
+                let svc = make_svc(&self.store, &self.clock, &self.ids);
+                svc.delete_task(&id, has_children).await
+            };
+            match result {
+                Ok(()) => {
+                    self.rebuild().await;
+                    self.cursor = self.cursor.min(self.item_count().saturating_sub(1));
+                }
+                Err(e) => self.set_status(format!("delete: {e}")),
+            }
+        }
+        Ok(true)
     }
 
     async fn reorder_sibling(&mut self, down: bool) -> anyhow::Result<()> {

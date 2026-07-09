@@ -49,6 +49,9 @@ pub fn render(f: &mut Frame, app: &AppState) {
     if let Some((mode, input)) = &app.input {
         render_input_modal(f, area, mode, input);
     }
+    if let Some((id, has_children)) = &app.confirm_delete {
+        render_confirm_delete_modal(f, area, app, id, *has_children);
+    }
     if let Some(form) = &app.edit_form {
         render_edit_form(f, area, form);
     }
@@ -483,6 +486,33 @@ const MAX_NOTES_VISIBLE_ROWS: usize = 6;
 /// The add/child/search text dialog: multi-line, soft-wrapped, growing (up to
 /// `MAX_DIALOG_VISIBLE_ROWS`) then vertically scrolling. Enter inserts a
 /// newline; Alt+Enter submits (see `app::handle_input_key`).
+fn render_confirm_delete_modal(
+    f: &mut Frame,
+    area: Rect,
+    app: &AppState,
+    id: &todoapp_core::Id,
+    has_children: bool,
+) {
+    let title = app
+        .items
+        .iter()
+        .find(|i| &i.id == id)
+        .map_or(id.as_str(), |i| i.title.as_str());
+    let text = if has_children {
+        format!("Delete '{title}' and all its descendants? (y/N)")
+    } else {
+        format!("Delete '{title}'? (y/N)")
+    };
+    let popup = centered_rect(area, 60, 3);
+    let p = Paragraph::new(text).wrap(Wrap { trim: true }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" confirm delete "),
+    );
+    f.render_widget(Clear, popup);
+    f.render_widget(p, popup);
+}
+
 fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, input: &tui_input::Input) {
     let title = match mode {
         InputMode::AddChild(_) => " new child task (alt+enter submit · esc cancel) ",

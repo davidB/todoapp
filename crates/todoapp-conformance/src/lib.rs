@@ -414,6 +414,75 @@ macro_rules! conformance_suite {
                     .await;
                 assert_eq!(by_tag.len(), 1);
             }
+
+            #[tokio::test]
+            async fn delete_leaf_task_removes_components_and_link() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let p = s.create("P", None, Status::Todo, []).await.unwrap();
+                let c = s.create("C", Some(&p.id), Status::Todo, []).await.unwrap();
+                s.delete_task(&c.id, false).await.unwrap();
+                assert!(s.snapshot(&c.id).await.is_err());
+                assert!(s.children_of(&p.id).await.is_empty());
+            }
+
+            #[tokio::test]
+            async fn delete_task_with_children_rejected_without_recursive() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let p = s.create("P", None, Status::Todo, []).await.unwrap();
+                let c = s.create("C", Some(&p.id), Status::Todo, []).await.unwrap();
+                assert!(s.delete_task(&p.id, false).await.is_err());
+                assert!(s.snapshot(&p.id).await.is_ok());
+                assert!(s.snapshot(&c.id).await.is_ok());
+            }
+
+            #[tokio::test]
+            async fn delete_task_recursive_cascades_subtree() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let p = s.create("P", None, Status::Todo, []).await.unwrap();
+                let c = s.create("C", Some(&p.id), Status::Todo, []).await.unwrap();
+                s.delete_task(&p.id, true).await.unwrap();
+                assert!(s.snapshot(&p.id).await.is_err());
+                assert!(s.snapshot(&c.id).await.is_err());
+            }
+
+            #[tokio::test]
+            async fn delete_task_removes_unshared_blob_keeps_shared_blob() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let a = s.create("A", None, Status::Todo, []).await.unwrap();
+                let b = s.create("B", None, Status::Todo, []).await.unwrap();
+                let a = s
+                    .add_attachment_from_bytes(&a.id, "f.txt", b"same bytes".to_vec(), None)
+                    .await
+                    .unwrap();
+                let b = s
+                    .add_attachment_from_bytes(&b.id, "f.txt", b"same bytes".to_vec(), None)
+                    .await
+                    .unwrap();
+                let blob = a.attachments[0].blob.clone().unwrap();
+                assert_eq!(b.attachments[0].blob, Some(blob.clone()));
+
+                s.delete_task(&a.id, false).await.unwrap();
+                assert!(s.blobs.get(&blob).await.is_some());
+
+                s.delete_task(&b.id, false).await.unwrap();
+                assert!(s.blobs.get(&blob).await.is_none());
+            }
+
+            #[tokio::test]
+            async fn delete_task_removes_dangling_blocks_links() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let a = s.create("A", None, Status::Todo, []).await.unwrap();
+                let b = s.create("B", None, Status::Todo, []).await.unwrap();
+                s.block(&a.id, &b.id).await.unwrap();
+                assert!(s.is_blocked(&b.id).await);
+                s.delete_task(&a.id, false).await.unwrap();
+                assert!(!s.is_blocked(&b.id).await);
+            }
         }
     };
 }

@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use todoapp_core::{
-    Attachment, AttachmentKind, Command, ComponentStore, Date, Due, Duration, Id, IssueRef, Link,
-    LinkKind, Position, Recurrence, Status, Tags, TaskEntityStore, Title,
+    Attachment, AttachmentKind, Attachments, Command, ComponentStore, Date, Due, Duration, Id,
+    IssueRef, Link, LinkKind, Position, Recurrence, Status, Tags, TaskEntityStore, Title,
 };
 
 use crate::service::{Error, Services, TaskSnapshot};
@@ -204,6 +204,76 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
             .await
             .ok_or_else(|| Error::Cycle(format!("{id} has no parent to reorder within")))?;
         self.attach(id, &parent, Some(anchor)).await
+    }
+
+    /// Delete `id` and all its capability components. Rejects if `id` has
+    /// children unless `recursive` (then deletes the whole subtree,
+    /// deepest-first). Cleans up child/blocks links and removes any
+    /// attachment blob no longer referenced by another task.
+    pub async fn delete_task(&self, id: &Id, recursive: bool) -> Result<(), Error> {
+        if self.store.meta(id).await.is_none() {
+            return Err(Error::NotFound(id.clone()));
+        }
+        let mut victims = vec![id.clone()];
+        let descendants = self.descendants(id).await;
+        if !descendants.is_empty() {
+            if !recursive {
+                return Err(Error::Cycle(format!("{id} has children; use --recursive")));
+            }
+            victims.extend(descendants);
+        }
+        // Deepest-first isn't required for correctness (component/link removal
+        // is independent per id), but delete children before parents so a crash
+        // mid-way never leaves a parent pointing at an already-gone child.
+        for victim in victims.iter().rev() {
+            self.delete_one(victim).await;
+        }
+        Ok(())
+    }
+
+    /// Remove one task's components, its child/blocks links (both
+    /// directions), and any attachment blob not referenced by a surviving
+    /// task.
+    async fn delete_one(&self, id: &Id) {
+        if let Some(attachments) = self.store.get::<Attachments>(id).await {
+            for att in attachments.0 {
+                if let Some(blob) = att.blob
+                    && !self.blob_in_use_elsewhere(&blob, id).await
+                {
+                    self.blobs.remove(&blob).await;
+                }
+            }
+        }
+        if let Some(parent) = self.raw_parent_of(id).await {
+            self.links.remove(&parent, id, LinkKind::Child).await;
+        }
+        for child in self.children_of(id).await {
+            self.links.remove(id, &child.to, LinkKind::Child).await;
+        }
+        for l in self.links.incoming(id, LinkKind::Blocks).await {
+            self.links.remove(&l.from, id, LinkKind::Blocks).await;
+        }
+        for l in self.links.outgoing(id, LinkKind::Blocks).await {
+            self.links.remove(id, &l.to, LinkKind::Blocks).await;
+        }
+        self.store.delete(id).await;
+    }
+
+    /// Does any task other than `excluding` still reference `blob` in its
+    /// `Attachments`? ponytail: O(n) scan over every task id — fine for a
+    /// single-user/local tool; revisit only if attachment counts get large.
+    async fn blob_in_use_elsewhere(&self, blob: &Id, excluding: &Id) -> bool {
+        for other in self.store.all().await {
+            if &other == excluding {
+                continue;
+            }
+            if let Some(atts) = self.store.get::<Attachments>(&other).await
+                && atts.0.iter().any(|a| a.blob.as_ref() == Some(blob))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// FR-6: add a `blocks` edge `blocker → blocked`; rejects a new cycle.
