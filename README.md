@@ -64,7 +64,8 @@ dates, and ETA projection.*
 **Homebrew** (macOS/Linux):
 
 ```sh
-brew install davidB/tap/tda
+brew install davidB/tap/todoapp-cli
+
 ```
 
 **Shell installer** (macOS/Linux):
