@@ -61,7 +61,17 @@ pub fn render(f: &mut Frame, app: &AppState) {
 /// badge) plus one configured column per capability (spec: values are always
 /// the aggregate over the task + its descendants, `Services::aggregate`).
 fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
-    let columns = &app.config.columns;
+    // The tree (title) column is the most important part of the view: it
+    // always keeps at least 30% of the area's width. If the configured
+    // columns don't leave that much room, drop columns from the right
+    // (lowest priority = last in configured order) until they do.
+    // ponytail: hides columns rather than adding a horizontal scrollbar —
+    // ratatui's Table has no native scroll support, and this is simpler.
+    let min_tree_width = area.width * 30 / 100;
+    let mut columns: &[ColumnKind] = &app.config.columns;
+    while !columns.is_empty() && tree_col_width_for(area.width, columns) < min_tree_width {
+        columns = &columns[..columns.len() - 1];
+    }
     let header = Row::new(
         std::iter::once(Cell::from("tree")).chain(columns.iter().map(|c| Cell::from(c.header()))),
     );
@@ -70,9 +80,7 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
     // column-spacing gap per configured column (Table's default spacing).
     // ponytail: an approximation, not ratatui's exact layout math — only
     // used to size the ellipsis truncation, a char or two off doesn't matter.
-    let configured_width: u16 = columns.iter().map(|c| column_width(*c)).sum();
-    let gaps = u16::try_from(columns.len()).unwrap_or(0);
-    let tree_col_width = area.width.saturating_sub(2 + configured_width + gaps);
+    let tree_col_width = tree_col_width_for(area.width, columns);
     let rows: Vec<Row> = app
         .items
         .iter()
@@ -89,6 +97,12 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
         .row_highlight_style(app.config.style_for(Semantic::Selected));
     let mut state = TableState::default().with_selected(Some(app.cursor));
     f.render_stateful_widget(table, area, &mut state);
+}
+
+fn tree_col_width_for(area_width: u16, columns: &[ColumnKind]) -> u16 {
+    let configured_width: u16 = columns.iter().map(|c| column_width(*c)).sum();
+    let gaps = u16::try_from(columns.len()).unwrap_or(0);
+    area_width.saturating_sub(2 + configured_width + gaps)
 }
 
 fn column_width(kind: ColumnKind) -> u16 {
