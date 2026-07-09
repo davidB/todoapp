@@ -9,6 +9,8 @@ rust = { version = "1.96.0", profile = "minimal", components = "rustfmt,clippy" 
 # "github:release-plz/release-plz" = "latest"
 # "github:orhun/git-cliff" = "latest"
 # "github:axodotdev/cargo-dist" = "latest"
+# "asciinema" = "latest" # can be installed via brew
+# "cargo:agg" = "latest" # can be installed via brew
 
 [tasks."build"]
 description = "compile the workspace"
@@ -63,3 +65,26 @@ run = "cargo --locked fmt --check"
 [tasks."release-pr"]
 description = "dry-run the release-plz version bump + changelog locally"
 run = "release-plz update"
+
+[tasks."demo:record"]
+description = "record the demo with asciinema and convert into animated gif"
+dir = "docs"
+run = [
+  # "asciinema rec --command 'cargo run -- tui' -t 'todoapp tui' --idle-time-limit 2 --overwrite demo.cast --cols 100 --rows 28",
+  "asciinema rec --command '../target/debug/tda tui' -t 'todoapp tui' --idle-time-limit 2 --overwrite demo.cast --cols 100 --rows 28",
+  "agg demo.cast demo.gif --font-size 16 --speed 1.2",
+]
+
+[tasks."demo:play"]
+dir = "docs"
+run = [
+  "asciinema play demo.cast",
+  # "xdg-open demo.gif",
+]
+
+[tasks."demo:mp4"]
+description = "convert demo.gif into a mp4 (without sound)"
+dir = "docs"
+# MP4 for YouTube/Bluesky (agg doesn't do mp4 directly — convert gif, or use a
+# terminal recorder w/ ffmpeg passthrough)
+run = 'ffmpeg -i demo.gif -movflags faststart -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" demo.mp4'
