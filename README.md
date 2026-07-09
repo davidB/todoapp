@@ -54,7 +54,7 @@ requirements list.
 
 ## Screenshot
 
-![tda TUI: a task tree with status bars, due dates, and an ETA column](docs/screenshot-tui.png)
+![tda TUI: a task tree with status bars, due dates, and an ETA column](https://github.com/davidB/todoapp/blob/main/docs/screenshot-tui.png)
 
 *Early build of the TUI — tree view with per-task status/progress bars, due
 dates, and ETA projection.*
