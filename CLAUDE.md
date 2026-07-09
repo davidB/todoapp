@@ -26,7 +26,10 @@ Later adapters (per §5): `todoapp-cli`, `todoapp-api`, `todoapp-mcp`, `todoapp-
 - `build_visible_items(store, clock, ids, expanded)` is a free async fn for tree rebuild;
   the caller assigns the result to `self.items` after borrows are released.
 - `SystemClock` (chrono `Local::now`) + `UlidGen` (ulid crate) are the real impls.
-- DB path: `$TDA_DB` env var or `~/.local/share/tda/tda.db`.
+- DB path: OS-standard data dir, e.g. `~/.local/share/tda/tda.db` on Linux.
+  Config path: OS-standard config dir, e.g. `~/.config/tda/tui.toml`. No env
+  var overrides (dropped as YAGNI) — future overrides, if needed, would be
+  CLI flags or a parent-path search, not env vars.
 - Actor for claim: fixed `Id("me")` — single-user, no auth (spec §2/§13 Q5).
 
 ## Inviolable: the dependency rule (§5)

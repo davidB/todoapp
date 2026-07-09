@@ -117,8 +117,25 @@ tda                             # or: tda tui
 | `?` | toggle help |
 | `esc` | quit / back |
 
-Data is stored via the [Turso](https://turso.tech/) adapter at `$TDA_DB`, or
-`~/.local/share/tda/tda.db` if unset.
+Data is stored via the [Turso](https://turso.tech/) adapter in the
+OS-standard data dir (e.g. `~/.local/share/tda/tda.db` on Linux).
+
+### Configuration
+
+The TUI's columns, work schedule, status set/colors, and keybindings are all
+retunable without a Rust change, via one optional TOML file:
+
+| | |
+|---|---|
+| Path | `~/.config/tda/tui.toml` (OS-standard config dir) |
+| Default | [`crates/todoapp-tui/tui.default.toml`](crates/todoapp-tui/tui.default.toml) |
+
+Copy the default file to that path and edit it — only the fields/actions you
+set are overridden, everything else keeps its embedded default. It has five
+tables: `[columns]` (order/visibility), `[schedule]` (hours/days used to
+project the `eta` column), `[status]` (which statuses are enabled, their
+cycle order, glyphs, spinner), `[styles]` (colors and text styles), and
+`[keybindings]` (action → key chords, e.g. `move_down = ["j", "down"]`).
 
 The `tda` binary can also be driven non-interactively for scripting and
 agents:

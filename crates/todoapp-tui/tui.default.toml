@@ -1,5 +1,6 @@
-# Default todoapp-tui general config. Copy to ~/.config/tda/config.toml (or
-# $TDA_CONFIG) and edit to retune.
+# Default todoapp-tui config. Copy to ~/.config/tda/tui.toml and edit to
+# retune — only the tables/fields/actions you set are overridden, unmentioned
+# ones keep their embedded default.
 [columns]
 # "id" shows the shortest unique prefix (git/jj-style abbreviation), usable
 # to target a task from the future CLI.
@@ -49,3 +50,29 @@ overdue_color = "red"
 selected_bg = "blue"
 selected_fg = "white"
 selected_modifier = "bold"
+
+[keybindings]
+# action = ["chord", ...] — each override replaces that action's whole key list.
+quit = ["q", "esc"]
+toggle_help = ["?"]
+move_down = ["j", "down"]
+move_up = ["k", "up"]
+jump_first = ["g", "home"]
+jump_last = ["G", "end"]
+expand = ["l", "right", "enter"]
+collapse = ["h", "left"]
+add_sibling = ["a"]
+add_root = ["A"]
+edit_title = ["e"]
+view_detail = ["v"]
+cycle_status = ["space"]
+claim = ["c"]
+reorder_down = ["alt+down"]
+reorder_up = ["alt+up"]
+reparent_in = ["alt+right"]
+reparent_out = ["alt+left"]
+search = ["/"]
+what_next = ["n"]
+select = ["V"]
+yank = ["y"]
+delete = ["d"]

@@ -1,8 +1,11 @@
 //! General TUI config: tree-table column order/visibility + the work
 //! calendar used to project the `eta` column. Same embedded-default +
 //! user-override TOML pattern as [`crate::keymap`]: an optional user file at
-//! `$TDA_CONFIG` (or `~/.config/tda/config.toml`) overrides individual
-//! fields; unmentioned fields keep their embedded defaults.
+//! an optional user file at `~/.config/tda/tui.toml` (the OS-standard config
+//! dir) overrides individual fields; unmentioned fields keep their embedded
+//! defaults. Shares the file with `[keybindings]` (see [`crate::keymap`]) —
+//! this module only reads the `columns`/`schedule`/`status`/`styles` tables
+//! and ignores the rest.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 use todoapp_core::{Duration, Status};
 
-const DEFAULT_CONFIG_TOML: &str = include_str!("../config.default.toml");
+const DEFAULT_CONFIG_TOML: &str = include_str!("../tui.default.toml");
 
 /// (config name, Status) — single source of truth for the TUI's status naming.
 const STATUS_NAMES: &[(&str, Status)] = &[

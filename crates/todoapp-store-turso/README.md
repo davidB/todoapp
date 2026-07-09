@@ -11,4 +11,4 @@ Data model: capability-keyed tables, one per capability, keyed by task id —
 see [`tda-spec.md` §7](../../tda-spec.md#7-data-model-turso).
 
 The default `tda` binary ([`todoapp-cli`](../todoapp-cli)) points this store
-at `$TDA_DB`, or `~/.local/share/tda/tda.db` if unset.
+at the OS-standard data dir (e.g. `~/.local/share/tda/tda.db` on Linux).

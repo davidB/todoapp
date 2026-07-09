@@ -111,7 +111,8 @@ enum FormatArg {
 #[derive(Parser)]
 #[command(
     name = "tda",
-    about = "Task and dependency manager — JSON output for agents/scripts"
+    about = "Task and dependency manager — JSON output for agents/scripts",
+    after_help = "Config: ~/.config/tda/tui.toml. Data: the OS data dir (e.g. ~/.local/share/tda/tda.db on Linux)."
 )]
 struct Cli {
     #[command(subcommand)]

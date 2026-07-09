@@ -21,48 +21,28 @@ use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Config;
 use crate::keymap::Keymap;
 
-/// Same DB path resolution used by `todoapp-cli` (`$TDA_DB`, else the OS data dir).
+/// DB path, in the OS-standard data dir. Same resolution used by `todoapp-cli`.
+#[must_use]
 pub fn db_path() -> PathBuf {
-    std::env::var("TDA_DB").map_or_else(
-        |_| {
-            dirs::data_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("tda/tda.db")
-        },
-        PathBuf::from,
-    )
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("tda/tda.db")
 }
 
-fn keymap_path() -> PathBuf {
-    std::env::var("TDA_KEYMAP").map_or_else(
-        |_| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("tda/keybindings.toml")
-        },
-        PathBuf::from,
-    )
+/// TUI config path (columns/schedule/status/styles/keybindings, all in one
+/// file), in the OS-standard config dir.
+fn tui_config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("tda/tui.toml")
 }
 
-fn load_keymap() -> anyhow::Result<Keymap> {
-    let user_toml = std::fs::read_to_string(keymap_path()).ok();
-    Keymap::load(user_toml.as_deref())
-}
-
-fn config_path() -> PathBuf {
-    std::env::var("TDA_CONFIG").map_or_else(
-        |_| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("tda/config.toml")
-        },
-        PathBuf::from,
-    )
-}
-
-fn load_config() -> anyhow::Result<Config> {
-    let user_toml = std::fs::read_to_string(config_path()).ok();
-    Config::load(user_toml.as_deref())
+fn load_tui_config() -> anyhow::Result<(Config, Keymap)> {
+    let user_toml = std::fs::read_to_string(tui_config_path()).ok();
+    Ok((
+        Config::load(user_toml.as_deref())?,
+        Keymap::load(user_toml.as_deref())?,
+    ))
 }
 
 /// Opens the `TursoStore` at [`db_path`], creating its parent directory if needed.
@@ -78,8 +58,7 @@ pub async fn open_store() -> anyhow::Result<TursoStore> {
 
 pub async fn run() -> anyhow::Result<()> {
     let store = open_store().await?;
-    let keymap = load_keymap().context("load keybindings")?;
-    let config = load_config().context("load config")?;
+    let (config, keymap) = load_tui_config().context("load tui config")?;
 
     let clipboard: Box<dyn Clipboard> = Box::new(SystemClipboard::new());
 

@@ -14,7 +14,8 @@ Key building blocks:
 - `SystemClock` / `UlidGen` — the real `Clock`/`IdGenerator` impls (test code
   elsewhere injects fakes instead).
 - `keymap.rs` — the action ↔ keybinding table (see the cheat-sheet in the
-  [root README](../../README.md#tui)); `config.rs` loads user overrides.
+  [root README](../../README.md#tui)); `config.rs` and `keymap.rs` both load
+  their tables from the same `tui.toml` (see [`tui.default.toml`](tui.default.toml)).
 
 For a screenshot and the full keybinding list, see the
 [root README](../../README.md).
