@@ -573,16 +573,7 @@ impl AppState {
             }
             // Add sibling of cursor (or root task if list is empty) — tree only.
             Action::AddSibling if in_tree => {
-                self.input = Some(match self.cursor_id() {
-                    Some(id) => {
-                        let svc = make_svc(&self.store, &self.clock, &self.ids);
-                        match svc.parent_of(&id).await {
-                            Some(parent_id) => (InputMode::AddChild(parent_id), Input::default()),
-                            None => (InputMode::AddRoot, Input::default()),
-                        }
-                    }
-                    None => (InputMode::AddRoot, Input::default()),
-                });
+                self.open_add_sibling().await;
             }
             // Add root task (tree only)
             Action::AddRoot if in_tree => {
@@ -751,6 +742,33 @@ impl AppState {
         modifiers: KeyModifiers,
         width: usize,
     ) -> anyhow::Result<bool> {
+        // Depth-shift the cursor task while the add dialog is open, via
+        // whatever chord the user has bound to reparent_in/out (default
+        // alt+right/alt+left) — same effect as pressing them in tree view,
+        // just reachable mid-dialog too. Computed up front since it needs
+        // an immutable read of `self.input` that can't coexist with the
+        // `&mut Input` borrow taken below.
+        let is_add_dialog = matches!(
+            self.input.as_ref().map(|(m, _)| m),
+            Some(InputMode::AddChild(_) | InputMode::AddRoot)
+        );
+        let depth_shift_action = if is_add_dialog {
+            self.keymap
+                .lookup(code, modifiers)
+                .filter(|a| matches!(a, Action::ReparentIn | Action::ReparentOut))
+        } else {
+            None
+        };
+        if let Some(action) = depth_shift_action {
+            match action {
+                Action::ReparentIn => self.reparent_in().await?,
+                Action::ReparentOut => self.reparent_out().await?,
+                _ => unreachable!(),
+            }
+            self.open_add_sibling().await;
+            return Ok(true);
+        }
+
         let Some((_, input)) = &mut self.input else {
             return Ok(true);
         };
@@ -763,7 +781,11 @@ impl AppState {
                 if let Some((mode, input)) = self.input.take() {
                     let trimmed = input.value().trim().to_string();
                     if !trimmed.is_empty() {
+                        let is_add = matches!(mode, InputMode::AddChild(_) | InputMode::AddRoot);
                         self.submit_input(mode, trimmed).await?;
+                        if is_add && self.config.chain_add {
+                            self.open_add_sibling().await;
+                        }
                     }
                 }
             }
@@ -1088,6 +1110,22 @@ impl AppState {
         Ok(())
     }
 
+    /// Open the add-task dialog targeting a sibling of the cursor task (or a
+    /// root task if the cursor has no parent / the list is empty). Also used
+    /// to reopen/retarget the dialog after a chained submit or a depth shift.
+    async fn open_add_sibling(&mut self) {
+        self.input = Some(match self.cursor_id() {
+            Some(id) => {
+                let svc = make_svc(&self.store, &self.clock, &self.ids);
+                match svc.parent_of(&id).await {
+                    Some(parent_id) => (InputMode::AddChild(parent_id), Input::default()),
+                    None => (InputMode::AddRoot, Input::default()),
+                }
+            }
+            None => (InputMode::AddRoot, Input::default()),
+        });
+    }
+
     /// Reparent the cursor task under the sibling immediately above it (indent).
     async fn reparent_in(&mut self) -> anyhow::Result<()> {
         let Some(item) = self.items.get(self.cursor).cloned() else {
@@ -1267,6 +1305,115 @@ pub(crate) mod tests {
             .unwrap();
         let (_, input) = app.input.as_ref().unwrap();
         assert_eq!(input.value(), "foo baz"); // "bar " word-deleted
+    }
+
+    async fn new_app_with(keymap_toml: Option<&str>, config_toml: Option<&str>) -> AppState {
+        AppState::new(
+            TursoStore::open_memory().await,
+            Keymap::load(keymap_toml).unwrap(),
+            Config::load(config_toml).unwrap(),
+            Box::new(crate::clipboard::FakeClipboard::default()),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn depth_of(app: &AppState, title: &str) -> Option<usize> {
+        app.items.iter().find(|i| i.title == title).map(|i| i.depth)
+    }
+
+    /// With `behavior.chain_add = true`, Alt+Enter reopens the add dialog
+    /// at the same level instead of closing it, so several tasks can be
+    /// added back-to-back without pressing `a` again.
+    #[tokio::test]
+    async fn chain_add_keeps_dialog_open_at_same_level() {
+        let mut app = new_app_with(None, Some("[behavior]\nchain_add = true\n")).await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "A").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.input.is_some(), "dialog stays open when chaining");
+
+        type_str(&mut app, "B").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.input.is_some());
+        assert_eq!(depth_of(&app, "A"), Some(0));
+        assert_eq!(depth_of(&app, "B"), Some(0)); // sibling of A, not nested
+    }
+
+    /// Without chaining, Alt+Enter closes the dialog as before (no
+    /// regression from the `chain_add` feature).
+    #[tokio::test]
+    async fn chain_add_off_by_default_closes_dialog() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "A").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.input.is_none());
+    }
+
+    /// Alt+Right/Alt+Left (`reparent_in`/`reparent_out`'s default chords) work
+    /// inside the add dialog to shift the cursor task's depth, independent
+    /// of `chain_add` — same as pressing them in tree view.
+    #[tokio::test]
+    async fn depth_shift_works_in_add_dialog_regardless_of_chain_add() {
+        let mut app = new_app().await; // chain_add = false (default)
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "A").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.input.is_none()); // dialog closed, not chaining
+
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "B").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(depth_of(&app, "B"), Some(0)); // sibling of A at root
+
+        // Reopen the dialog on B and nest it under A via alt+right.
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        app.handle_event(press(KeyCode::Right, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(depth_of(&app, "B"), Some(1)); // now a child of A
+        let (mode, _) = app.input.as_ref().unwrap();
+        assert!(matches!(mode, InputMode::AddChild(_)));
+
+        // Alt+left outdents it back to root.
+        app.handle_event(press(KeyCode::Left, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(depth_of(&app, "B"), Some(0));
+    }
+
+    /// `reparent_in`'s chord is read live from the keymap, not hardcoded —
+    /// rebinding it still drives the same depth-shift-in-dialog behavior.
+    #[tokio::test]
+    async fn depth_shift_honors_rebound_chord() {
+        let mut app = new_app_with(Some("[keybindings]\nreparent_in = [\"ctrl+j\"]\n"), None).await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "A").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "B").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        app.handle_event(press(KeyCode::Char('j'), KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(depth_of(&app, "B"), Some(1)); // rebound chord nested B under A
     }
 
     /// The edit form's notes field is multi-line (Enter inserts a newline,

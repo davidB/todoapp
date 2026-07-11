@@ -1,6 +1,14 @@
 # Default todoapp-tui config. Copy to ~/.config/tda/tui.toml and edit to
 # retune — only the tables/fields/actions you set are overridden, unmentioned
 # ones keep their embedded default.
+[behavior]
+# Keep the add-task dialog open after Alt+Enter, so you can keep typing
+# task after task without pressing `a` again. reparent_in/reparent_out
+# (see [keybindings] below, default alt+right/alt+left) work inside the
+# add dialog too, whether or not this is on — they shift the depth of the
+# task just created before you type the next one.
+chain_add = false
+
 [columns]
 # "id" shows the shortest unique prefix (git/jj-style abbreviation), usable
 # to target a task from the future CLI.

@@ -177,6 +177,11 @@ struct RawStyles {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct RawBehavior {
+    chain_add: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct RawConfig {
     #[serde(default)]
     columns: RawColumns,
@@ -186,6 +191,8 @@ struct RawConfig {
     status: RawStatus,
     #[serde(default)]
     styles: RawStyles,
+    #[serde(default)]
+    behavior: RawBehavior,
 }
 
 pub struct Config {
@@ -207,6 +214,8 @@ pub struct Config {
     pub aggregate_modifier: Modifier,
     pub overdue_style: Style,
     pub selected_style: Style,
+    /// Keep the add-task dialog open after Alt+Enter for rapid batch entry.
+    pub chain_add: bool,
 }
 
 impl Config {
@@ -287,6 +296,10 @@ impl Config {
             .styles
             .selected_modifier
             .context("default config missing styles.selected_modifier")?;
+        let mut chain_add = default
+            .behavior
+            .chain_add
+            .context("default config missing behavior.chain_add")?;
 
         if let Some(user_toml) = user_toml {
             let overrides: RawConfig = toml::from_str(user_toml).context("parse user config")?;
@@ -331,6 +344,9 @@ impl Config {
             }
             if let Some(m) = overrides.styles.selected_modifier {
                 selected_modifier_name = m;
+            }
+            if let Some(v) = overrides.behavior.chain_add {
+                chain_add = v;
             }
         }
 
@@ -414,6 +430,7 @@ impl Config {
             aggregate_modifier,
             overdue_style,
             selected_style,
+            chain_add,
         })
     }
 }
