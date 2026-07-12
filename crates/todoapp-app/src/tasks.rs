@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use todoapp_core::{
     Attachment, AttachmentKind, Attachments, Command, ComponentStore, Date, Due, Duration, Id,
     IssueRef, Link, LinkKind, Position, Recurrence, Status, Tags, TaskEntityStore, Title,
+    extract_mentions,
 };
 
 use crate::service::{Error, Services, TaskSnapshot};
@@ -24,10 +25,11 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         status: Status,
         tags: impl IntoIterator<Item = String>,
     ) -> Result<TaskSnapshot, Error> {
+        let (title, mentions) = extract_mentions(&title.into());
         let id = self.ids.next_id();
         let now = self.clock.now();
         self.store.create(&id, now, now).await;
-        self.store.set(&id, Title(title.into())).await;
+        self.store.set(&id, Title(title)).await;
         self.store.set(&id, status).await;
         let tags: BTreeSet<String> = tags.into_iter().collect();
         if !tags.is_empty() {
@@ -37,6 +39,11 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         // root is just another `child` edge and `roots()` is a plain port query.
         let root = Id::root();
         self.attach(&id, parent.unwrap_or(&root), None).await?;
+        // `@name` title syntax (spec FR-32): additive, idempotent (Assign is a
+        // no-op if already assigned).
+        for actor in mentions {
+            self.assign(&id, actor).await?;
+        }
         self.snapshot(&id).await
     }
 
@@ -70,7 +77,15 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         id: &Id,
         title: impl Into<String>,
     ) -> Result<TaskSnapshot, Error> {
-        self.run(id, Command::SetTitle(title.into())).await
+        let (title, mentions) = extract_mentions(&title.into());
+        let snap = self.run(id, Command::SetTitle(title)).await?;
+        if mentions.is_empty() {
+            return Ok(snap);
+        }
+        for actor in mentions {
+            self.assign(id, actor).await?;
+        }
+        self.snapshot(id).await
     }
     pub async fn set_notes(&self, id: &Id, notes: Option<String>) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetNotes(notes)).await

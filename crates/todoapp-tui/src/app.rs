@@ -89,6 +89,7 @@ pub enum InputMode {
     AddChild(Id),
     AddRoot,
     Search,
+    Assign(Id),
 }
 
 /// Field labels for `TaskEditForm`, in `fields` order. `id` is shown for
@@ -282,15 +283,20 @@ async fn build_visible_items(
     items
 }
 
-/// Diff a comma-separated actor-id field against a task's current
-/// `Assignment`s: `(to_assign, to_unassign)`.
-fn diff_assignees(current: &[Assignment], text: &str) -> (Vec<Id>, Vec<Id>) {
-    let wanted: Vec<Id> = text
-        .split(',')
+/// Parse a comma-separated actor-id field (e.g. typed into the quick-assign
+/// prompt or the edit form's assignee field) into ids, dropping blanks.
+fn parse_actor_list(text: &str) -> Vec<Id> {
+    text.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(Id::new)
-        .collect();
+        .collect()
+}
+
+/// Diff a comma-separated actor-id field against a task's current
+/// `Assignment`s: `(to_assign, to_unassign)`.
+fn diff_assignees(current: &[Assignment], text: &str) -> (Vec<Id>, Vec<Id>) {
+    let wanted: Vec<Id> = parse_actor_list(text);
     let to_assign = wanted
         .iter()
         .filter(|id| !current.iter().any(|a| &a.actor == *id))
@@ -647,6 +653,12 @@ impl AppState {
             Action::Claim if in_tree => {
                 self.claim().await?;
             }
+            // Quick assign: prompt for actor(s), additive (tree only)
+            Action::Assign if in_tree => {
+                if let Some(id) = self.cursor_id() {
+                    self.input = Some((InputMode::Assign(id), Input::default()));
+                }
+            }
             // Reorder among siblings (tree only)
             Action::ReorderDown if in_tree => {
                 self.reorder_sibling(true).await?;
@@ -871,6 +883,21 @@ impl AppState {
                 };
                 self.view = View::List(hits);
                 self.cursor = 0;
+            }
+            InputMode::Assign(id) => {
+                let mut error = None;
+                {
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    for actor in parse_actor_list(&text) {
+                        if let Err(e) = svc.assign(&id, actor).await {
+                            error = Some(format!("assign: {e}"));
+                        }
+                    }
+                }
+                if let Some(msg) = error {
+                    self.set_status(msg);
+                }
+                self.rebuild().await;
             }
         }
         Ok(())
@@ -1326,6 +1353,39 @@ pub(crate) mod tests {
             .unwrap();
         let item = app.items.iter().find(|i| i.title == "Task").unwrap();
         assert_eq!(item.status, Status::Todo);
+    }
+
+    /// The quick-assign action (`s`) is additive: it doesn't clear an
+    /// assignee already set (e.g. via an `@mention` on create).
+    #[tokio::test]
+    async fn quick_assign_action_adds_actor_without_clearing_existing() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "fix @alice bug").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        let id = app
+            .items
+            .iter()
+            .find(|i| i.title == "fix bug")
+            .unwrap()
+            .id
+            .clone();
+        app.cursor = app.items.iter().position(|i| i.id == id).unwrap();
+
+        app.handle_event(press_char('s'), TERM_WIDTH).await.unwrap();
+        assert!(matches!(&app.input, Some((InputMode::Assign(target), _)) if *target == id));
+        type_str(&mut app, "bob").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        let snap = svc.snapshot(&id).await.unwrap();
+        let actors: Vec<Id> = snap.assignments.iter().map(|a| a.actor.clone()).collect();
+        assert!(actors.contains(&Id::new("alice")));
+        assert!(actors.contains(&Id::new("bob")));
     }
 
     /// With `draft` re-added to `status.enabled` as the first entry, new

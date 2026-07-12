@@ -518,6 +518,9 @@ fn render_input_modal(f: &mut Frame, area: Rect, mode: &InputMode, input: &tui_i
         InputMode::AddChild(_) => " new child task (alt+enter submit · esc cancel) ",
         InputMode::AddRoot => " new root task (alt+enter submit · esc cancel) ",
         InputMode::Search => " search (alt+enter submit · esc cancel) ",
+        InputMode::Assign(_) => {
+            " assign actor(s), comma-separated (alt+enter submit · esc cancel) "
+        }
     };
     let width = text_edit::dialog_wrap_width(area.width);
     let rows = text_edit::visual_rows(input, width);

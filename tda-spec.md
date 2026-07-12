@@ -49,7 +49,7 @@ The same domain is reachable through a CLI, a TUI, an HTTP API, and (later) a GU
 | **Task** | The atomic unit: a stable identity (id + timestamps) that **carries a set of capabilities** rather than a fixed field list. Required: `Title`, `Status`. Optional capabilities attach à la carte. |
 | **Capability** | A composable unit of data + behaviour attached to a task: `Status`, `Notes` (Markdown), `Schedule` (due date, optionally with time-of-day), `Estimate` (ETA), `TimeSpent`, `TimeLog` (per-day breakdown), `Tags`, `Assignment`, `Recurrence`, `IssueRef`, `Attachments`, `Archived`. A capability may define **(a) data**, **(b) an aggregation** (how it rolls up a subtree), and **(c) guards** (which commands it allows/denies). Tasks differ by which capabilities they hold — composition, not an OOP god-struct. Adding a capability touches nothing existing. |
 | **Status** | A required capability. Values: `draft`, `todo`, `wip`, `paused`, `done` (see [§8](#8-status-lifecycle)) — `[DECISION]` any value may be set to any other, freely, no transition guard. Aggregates to subtree progress. `blocked` is **not** a stored value — it's derived from unmet `blocks` deps. |
-| **Assignment** | An *optional* capability: 0–n assignees (`Person` or `Agent`). Its presence changes `Claim` semantics (see [§8](#8-status-lifecycle)): absent/empty ⇒ anyone may claim; present ⇒ only a listed assignee may claim. |
+| **Assignment** | An *optional* capability: 0–n assignees (`Person` or `Agent`). Its presence changes `Claim` semantics (see [§8](#8-status-lifecycle)): absent/empty ⇒ anyone may claim; present ⇒ only a listed assignee may claim. Also settable via the `@name` title shorthand (`FR-32`): typing `@name` in a title adds `name` as an assignee and strips the mention from the stored title. |
 | **Recurrence** | An *optional* capability: a repeat rule (`daily`/`weekly`-by-weekday/`monthly`). **[DECISION]** No per-occurrence task spawning — a recurring task **resets in place**: completing it (`SetStatus(done)`) recomputes its `Schedule` from the rule and its own current due date, and flips `Status` back to `todo`, instead of staying `done`. A task with no `Schedule` can't meaningfully recur, so it just completes normally. |
 | **IssueRef** | An *optional* capability: a static `{provider, id, url}` reference to an external issue tracker (e.g. a GitHub/Jira issue) — no live sync, no computed URL. Mainly populated by imports. |
 | **Attachments** | An *optional* capability: a list of `{id, kind (link/file/image), title, url, blob, mime}`. `link` never has a `blob`; `file`/`image` may reference actual bytes stored via the `BlobStore` port (content-addressed) or just carry a source `url`/path when bytes aren't available (e.g. an import that only has metadata). |
@@ -110,6 +110,7 @@ Grouped and given IDs so the roadmap can reference them.
 - `FR-29` `Attachments` capability + `BlobStore` port: link or file/image attachments, with actual bytes stored content-addressed when available.
 - `FR-30` `Archived` capability: orthogonal to `Status`; hidden from default views via a filter, not a separate structure (resolves [§13](#13-open-questions) Q4).
 - `FR-31` `TimeLog` capability: per-day time-spent breakdown; `TimeSpent` (`FR-13`'s aggregate) is recomputed as its sum whenever set.
+- `FR-32` `@name` title syntax: on create or edit, `@name` in a task's title (outside inline/fenced code spans) is parsed out — stripped from the stored title — and adds `name` as an assignee (additive, idempotent; see `FR-2`/`FR-10`). The first of a planned family of special title syntax; no generic parser framework yet, just this one.
 
 **I/O**
 - `FR-16` Export any list or branch to Markdown task list and to JSON.
@@ -462,6 +463,7 @@ These are *not* resolved by the decisions above — they need your input (Claude
 6. **GUI framework** (`FR-22`): far off, but candidates are egui (Rust-native, pairs naturally with ratatui's immediate-mode feel) vs Tauri (web UI). No need to decide now.
 7. **Batch-create syntax** (`FR-1`): indentation = depth in the batch buffer (suggested), or flat-only with manual nesting after?
 8. **Multi-tag filter semantics** (`FR-24`): `tag:[a,b]` = match **all** (suggested) or **any**? And free-text (`FR-23`): substring (suggested) or FTS5 full-text later?
+9. **`@name` title syntax** (`FR-32`): should `@me` be a reserved alias (vs. a literal actor id, same as any other name)? Is the mention character set (`[A-Za-z0-9_-]`) final? As more special title syntax lands (planned), does parsing order/precedence between them need an explicit rule, or is adding one parser at a time fine?
 
 ---
 

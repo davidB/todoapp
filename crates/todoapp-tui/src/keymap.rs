@@ -28,6 +28,7 @@ pub enum Action {
     ViewDetail,
     CycleStatus,
     Claim,
+    Assign,
     ReorderUp,
     ReorderDown,
     ReparentIn,
@@ -65,6 +66,11 @@ impl Action {
             "cycle status draft→todo→wip→done",
         ),
         ("claim", Action::Claim, "claim (→ wip, single-user 'me')"),
+        (
+            "assign",
+            Action::Assign,
+            "assign to actor(s) (additive, comma-separated)",
+        ),
         ("reorder_up", Action::ReorderUp, "reorder up among siblings"),
         (
             "reorder_down",

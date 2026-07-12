@@ -60,6 +60,25 @@ macro_rules! conformance_suite {
             }
 
             #[tokio::test]
+            async fn at_mention_in_title_assigns_and_strips_on_create_and_edit() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let t = s
+                    .create("fix @alice bug", None, Status::Todo, [])
+                    .await
+                    .unwrap();
+                assert_eq!(t.title, "fix bug");
+                assert_eq!(t.assignments.len(), 1);
+                assert_eq!(t.assignments[0].actor, Id::new("alice"));
+
+                let t = s.set_title(&t.id, "fix @bob bug too").await.unwrap();
+                assert_eq!(t.title, "fix bug too");
+                let actors: Vec<Id> = t.assignments.iter().map(|a| a.actor.clone()).collect();
+                assert!(actors.contains(&Id::new("alice")));
+                assert!(actors.contains(&Id::new("bob")));
+            }
+
+            #[tokio::test]
             async fn batch_create_uses_indentation_for_depth() {
                 svc!(store, clock, ids);
                 let s = services!(store, clock, ids);
