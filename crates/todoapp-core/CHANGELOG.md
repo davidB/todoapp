@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0] - 2026-07-12
+
+### Features
+
+- Add #tag title syntax sharing scan with @mention (FR-33) ([a48b89f](https://github.com/davidB/todoapp/commit/a48b89f2b65dcb60d3747dab4cad626e4300247b))
+- Add quick-assign action + `@mention` title syntax (FR-32) ([9b170b3](https://github.com/davidB/todoapp/commit/9b170b32eb0cc03d32f7559bd971c12a92e512fa))
+
+
 ## [0.1.0] - 2026-07-07
 
 ### Documentation

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0] - 2026-07-12
+
+### Bug Fixes
+
+- New tasks start on first enabled status, not hardcoded draft ([e6c5010](https://github.com/davidB/todoapp/commit/e6c5010232ef4484dd1584ba75e004427e56c2ea))
+
+### Features
+
+- Add quick-assign action + `@mention` title syntax (FR-32) ([9b170b3](https://github.com/davidB/todoapp/commit/9b170b32eb0cc03d32f7559bd971c12a92e512fa))
+- Add chain_add config for batch task insertion ([c1f8e80](https://github.com/davidB/todoapp/commit/c1f8e809595966e9dac16691e8648423a99dc686))
+- Add delete-task command (core/app/cli/tui) ([b74b534](https://github.com/davidB/todoapp/commit/b74b534f6bb59e4d7eebf119f91802205109dd20))
+- Keep tree column at least 30% wide, hide columns to fit ([8030291](https://github.com/davidB/todoapp/commit/803029187081858f479848fd8c38589566fce528))
+
+### Refactoring
+
+- Merge config.toml + keybindings.toml into tui.toml ([2b660ef](https://github.com/davidB/todoapp/commit/2b660ef6b1e48ffc7d8e821bf9e3af2ad43e7d68))
+
+
 ## [0.1.0] - 2026-07-07
 
 ### Bug Fixes

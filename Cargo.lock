@@ -3774,7 +3774,7 @@ dependencies = [
 
 [[package]]
 name = "todoapp-app"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "derive_more",
  "jiff",
@@ -3788,7 +3788,7 @@ dependencies = [
 
 [[package]]
 name = "todoapp-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3803,7 +3803,7 @@ dependencies = [
 
 [[package]]
 name = "todoapp-conformance"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "todoapp-app",
  "todoapp-core",
@@ -3814,7 +3814,7 @@ dependencies = [
 
 [[package]]
 name = "todoapp-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "derive_more",
@@ -3825,7 +3825,7 @@ dependencies = [
 
 [[package]]
 name = "todoapp-store-mem"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "todoapp-core",
@@ -3833,7 +3833,7 @@ dependencies = [
 
 [[package]]
 name = "todoapp-store-turso"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -3843,7 +3843,7 @@ dependencies = [
 
 [[package]]
 name = "todoapp-tui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",

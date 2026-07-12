@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0] - 2026-07-12
+
+### Refactoring
+
+- Merge config.toml + keybindings.toml into tui.toml ([2b660ef](https://github.com/davidB/todoapp/commit/2b660ef6b1e48ffc7d8e821bf9e3af2ad43e7d68))
+
+
 ## [0.1.0] - 2026-07-07
 
 ### Documentation
