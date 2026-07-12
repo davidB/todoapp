@@ -823,11 +823,17 @@ impl AppState {
     }
 
     async fn submit_input(&mut self, mode: InputMode, text: String) -> anyhow::Result<()> {
+        let initial_status = self
+            .config
+            .status_order
+            .first()
+            .copied()
+            .unwrap_or(Status::Draft);
         match mode {
             InputMode::AddChild(parent_id) => {
                 let new_id = {
                     let svc = make_svc(&self.store, &self.clock, &self.ids);
-                    svc.create(text, Some(&parent_id), Status::Draft, [])
+                    svc.create(text, Some(&parent_id), initial_status, [])
                         .await
                         .context("create child")?
                         .id
@@ -841,7 +847,7 @@ impl AppState {
             InputMode::AddRoot => {
                 let new_id = {
                     let svc = make_svc(&self.store, &self.clock, &self.ids);
-                    svc.create(text, None, Status::Draft, [])
+                    svc.create(text, None, initial_status, [])
                         .await
                         .context("create task")?
                         .id
@@ -1305,6 +1311,39 @@ pub(crate) mod tests {
             .unwrap();
         let (_, input) = app.input.as_ref().unwrap();
         assert_eq!(input.value(), "foo baz"); // "bar " word-deleted
+    }
+
+    /// New tasks must start on `status_order[0]`, not a hardcoded `Draft` —
+    /// otherwise a task created while `draft` is excluded from
+    /// `status.enabled` would land outside the configured cycle.
+    #[tokio::test]
+    async fn new_task_starts_on_first_enabled_status() {
+        let mut app = new_app().await; // default config: enabled = [todo, wip, paused, done]
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "Task").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        let item = app.items.iter().find(|i| i.title == "Task").unwrap();
+        assert_eq!(item.status, Status::Todo);
+    }
+
+    /// With `draft` re-added to `status.enabled` as the first entry, new
+    /// tasks are created as `draft` again.
+    #[tokio::test]
+    async fn new_task_starts_as_draft_when_draft_is_first_enabled() {
+        let mut app = new_app_with(
+            None,
+            Some("[status]\nenabled = [\"draft\", \"todo\", \"wip\", \"paused\", \"done\"]\n"),
+        )
+        .await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "Task").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        let item = app.items.iter().find(|i| i.title == "Task").unwrap();
+        assert_eq!(item.status, Status::Draft);
     }
 
     async fn new_app_with(keymap_toml: Option<&str>, config_toml: Option<&str>) -> AppState {
