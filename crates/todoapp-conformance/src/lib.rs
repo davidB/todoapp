@@ -79,6 +79,23 @@ macro_rules! conformance_suite {
             }
 
             #[tokio::test]
+            async fn hash_tag_in_title_adds_and_strips_on_create_and_edit() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let t = s
+                    .create("fix bug #urgent", None, Status::Todo, [])
+                    .await
+                    .unwrap();
+                assert_eq!(t.title, "fix bug");
+                assert!(t.tags.contains("urgent"));
+
+                let t = s.set_title(&t.id, "fix bug too #blocked").await.unwrap();
+                assert_eq!(t.title, "fix bug too");
+                assert!(t.tags.contains("urgent"));
+                assert!(t.tags.contains("blocked"));
+            }
+
+            #[tokio::test]
             async fn batch_create_uses_indentation_for_depth() {
                 svc!(store, clock, ids);
                 let s = services!(store, clock, ids);
