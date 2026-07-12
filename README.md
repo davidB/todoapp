@@ -44,6 +44,9 @@ The full design rationale lives in [`tda-spec.md`](tda-spec.md).
   `IssueRef`, `Attachments`, `TimeLog`.
 - Claim/delegate: a `todo` task can be claimed by anyone (or only its
   assignee, if one is set), handing off with full parent context.
+- `@name`/`#tag` title syntax: typing `fix @alice bug #urgent` in a title
+  auto-assigns `alice` and tags `urgent` — no separate step, works from CLI,
+  TUI, or import.
 - Aggregation up the tree: subtree progress %, summed estimate/time-spent,
   earliest due date — each capability defines its own roll-up.
 - Markdown and JSON import/export of any list or branch.
@@ -108,6 +111,7 @@ tda                             # or: tda tui
 | `e` | edit task title/notes |
 | `space` | cycle status |
 | `c` | claim (→ `wip`, actor `me`) |
+| `s` | assign to actor(s) (additive, comma-separated) |
 | `alt+↑` / `alt+↓` | reorder among siblings |
 | `alt+→` / `alt+←` | reparent in / out |
 | `/` | text search |
@@ -131,11 +135,13 @@ retunable without a Rust change, via one optional TOML file:
 | Default | [`crates/todoapp-tui/tui.default.toml`](crates/todoapp-tui/tui.default.toml) |
 
 Copy the default file to that path and edit it — only the fields/actions you
-set are overridden, everything else keeps its embedded default. It has five
+set are overridden, everything else keeps its embedded default. It has six
 tables: `[columns]` (order/visibility), `[schedule]` (hours/days used to
 project the `eta` column), `[status]` (which statuses are enabled, their
-cycle order, glyphs, spinner), `[styles]` (colors and text styles), and
-`[keybindings]` (action → key chords, e.g. `move_down = ["j", "down"]`).
+cycle order, glyphs, spinner), `[styles]` (colors and text styles),
+`[keybindings]` (action → key chords, e.g. `move_down = ["j", "down"]`), and
+`[behavior]` (e.g. `chain_add = true` keeps the add-task dialog open at the
+same level after `alt+enter`, for fast batch entry; defaults to `false`).
 
 The `tda` binary can also be driven non-interactively for scripting and
 agents:
@@ -146,6 +152,8 @@ tda add "buy milk"      # capture a task
 tda claim <id>          # claim → wip
 tda export > backup.md  # export a branch to Markdown/JSON
 tda import < backup.md  # round-trip it back in
+tda import --parent <id> < backup.md   # attach import under an existing task
+tda import --parent root < backup.md   # attach import's top-level items at the root
 ```
 
 ## AI agent integration
