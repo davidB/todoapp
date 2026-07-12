@@ -53,8 +53,10 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         serde_json::to_string_pretty(&export).map_err(|e| Error::Import(e.to_string()))
     }
 
-    /// FR-17: ingest an `Export` (round-trips with [`Self::export`]).
-    pub async fn import_json(&self, json: &str) -> Result<(), Error> {
+    /// FR-17: ingest an `Export` (round-trips with [`Self::export`] when
+    /// `parent` is `None`). Branch roots (no parent in the payload) attach
+    /// under `parent`, or the virtual root if `None`.
+    pub async fn import_json(&self, json: &str, parent: Option<&Id>) -> Result<(), Error> {
         let export: Export =
             serde_json::from_str(json).map_err(|e| Error::Import(e.to_string()))?;
         for task in &export.tasks {
@@ -71,11 +73,10 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         for link in &export.links {
             self.links.put(link.clone()).await;
         }
-        // Branch roots (no parent in the payload) attach under the virtual root,
-        // so the re-imported branch is a top-level task (`roots()` invariant).
+        let attach_under = parent.cloned().unwrap_or_else(Id::root);
         for task in &export.tasks {
             if !parented.contains(&task.id) {
-                self.attach(&task.id, &Id::root(), None).await?;
+                self.attach(&task.id, &attach_under, None).await?;
             }
         }
         Ok(())
@@ -104,8 +105,14 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     }
 
     /// FR-17: parse a Markdown task list into a tree (indent = depth). Status
-    /// comes from the checkbox (`[x]` → done, else todo). Returns the roots.
-    pub async fn import_md(&self, md: &str) -> Result<Vec<TaskSnapshot>, Error> {
+    /// comes from the checkbox (`[x]` → done, else todo). Top-level items
+    /// (depth 0) attach under `parent`, or the virtual root if `None`.
+    /// Returns the top-level tasks.
+    pub async fn import_md(
+        &self,
+        md: &str,
+        parent: Option<&Id>,
+    ) -> Result<Vec<TaskSnapshot>, Error> {
         let mut roots = Vec::new();
         let mut stack: Vec<Id> = Vec::new();
         for raw in md.lines() {
@@ -113,14 +120,14 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 continue;
             };
             stack.truncate(depth);
-            let parent = stack.last().cloned();
+            let task_parent = stack.last().cloned().or_else(|| parent.cloned());
             let status = if mark == 'x' {
                 Status::Done
             } else {
                 Status::Todo
             };
-            let task = self.create(title, parent.as_ref(), status, []).await?;
-            if parent.is_none() {
+            let task = self.create(title, task_parent.as_ref(), status, []).await?;
+            if depth == 0 {
                 roots.push(task.clone());
             }
             stack.push(task.id.clone());

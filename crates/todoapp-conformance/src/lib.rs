@@ -102,7 +102,7 @@ macro_rules! conformance_suite {
                 let json = s.export_json(&a.id).await.unwrap();
                 svc!(store2, clock2, ids2);
                 let s2 = services!(store2, clock2, ids2);
-                s2.import_json(&json).await.unwrap();
+                s2.import_json(&json, None).await.unwrap();
                 assert_eq!(s2.roots().await, vec![a.id]);
             }
 
@@ -332,7 +332,7 @@ macro_rules! conformance_suite {
                 let json = s.export_json(&root.id).await.unwrap();
                 svc!(store2, clock2, ids2);
                 let s2 = services!(store2, clock2, ids2);
-                s2.import_json(&json).await.unwrap();
+                s2.import_json(&json, None).await.unwrap();
                 assert_eq!(s2.export_json(&root.id).await.unwrap(), json);
             }
 
@@ -363,7 +363,7 @@ macro_rules! conformance_suite {
                 svc!(store, clock, ids);
                 let s = services!(store, clock, ids);
                 let md = "- [ ] Roadmap\n  - [x] M0 skeleton\n  - [ ] M1 core\n";
-                let roots = s.import_md(md).await.unwrap();
+                let roots = s.import_md(md, None).await.unwrap();
                 assert_eq!(roots.len(), 1);
                 let out = s.export_md(&roots[0].id).await.unwrap();
                 assert_eq!(out, md);

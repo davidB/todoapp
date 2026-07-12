@@ -114,9 +114,15 @@ fn ms_to_due(ms: i64) -> Option<Due> {
 }
 
 impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
-    /// Import a Super Productivity JSON backup. Returns the created project
-    /// root tasks (one per SP project, per user decision — not a tag).
-    pub async fn import_superproductivity(&self, json: &str) -> Result<Vec<TaskSnapshot>, Error> {
+    /// Import a Super Productivity JSON backup. Each SP project's root task
+    /// (and any orphan task with neither `parentId` nor `projectId`) attaches
+    /// under `parent`, or the virtual root if `None`. Returns the created
+    /// project root tasks (one per SP project, per user decision — not a tag).
+    pub async fn import_superproductivity(
+        &self,
+        json: &str,
+        parent: Option<&Id>,
+    ) -> Result<Vec<TaskSnapshot>, Error> {
         let export: SpExport =
             serde_json::from_str(json).map_err(|e| Error::Import(e.to_string()))?;
         let data = export.data;
@@ -133,7 +139,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         let mut project_tda: HashMap<String, Id> = HashMap::new();
         let mut roots = Vec::new();
         for (pid, project) in data.project.entities {
-            let root = self.create(project.title, None, Status::Todo, []).await?;
+            let root = self.create(project.title, parent, Status::Todo, []).await?;
             project_tda.insert(pid, root.id.clone());
             roots.push(root);
         }
@@ -233,7 +239,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .and_then(|pid| sp_to_tda.get(pid))
                 .or_else(|| t.project_id.as_ref().and_then(|pid| project_tda.get(pid)))
                 .cloned()
-                .unwrap_or_else(Id::root);
+                .unwrap_or_else(|| parent.cloned().unwrap_or_else(Id::root));
             self.attach(todoapp_id, &parent, None).await?;
         }
 

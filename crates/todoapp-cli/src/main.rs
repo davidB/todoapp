@@ -229,11 +229,16 @@ enum Cmd {
         #[arg(long, default_value = "md")]
         format: FormatArg,
     },
-    /// Import tasks from a file.
+    /// Import tasks from a file. Without --parent, wraps the import in a new
+    /// root task named after the file (name + mtime date). --parent root
+    /// attaches top-level items directly at the root; --parent <id> attaches
+    /// them under that task.
     Import {
         file: PathBuf,
         #[arg(long)]
         format: Option<FormatArg>,
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// Attach a file's contents to a task.
     Attach { id: String, file: PathBuf },
@@ -500,7 +505,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        Cmd::Import { file, format } => {
+        Cmd::Import {
+            file,
+            format,
+            parent,
+        } => {
             let text = std::fs::read_to_string(&file)
                 .with_context(|| format!("read {}", file.display()))?;
             let fmt = format.unwrap_or_else(|| {
@@ -510,17 +519,32 @@ async fn main() -> anyhow::Result<()> {
                     FormatArg::Md
                 }
             });
+            let parent_id = match parent.as_deref() {
+                None | Some("default") => {
+                    let title = dated_wrapper_title(&file)?;
+                    let task = svc.create(title, None, Status::Todo, []).await?;
+                    Some(task.id)
+                }
+                Some("root") => Some(Id::root()),
+                Some(other) => {
+                    let id = Id::new(other);
+                    svc.snapshot(&id).await?; // fail fast with a clear "not found" if bogus
+                    Some(id)
+                }
+            };
             match fmt {
                 FormatArg::Md => {
-                    let roots = svc.import_md(&text).await?;
+                    let roots = svc.import_md(&text, parent_id.as_ref()).await?;
                     print_json(&roots)?;
                 }
                 FormatArg::Json => {
-                    svc.import_json(&text).await?;
+                    svc.import_json(&text, parent_id.as_ref()).await?;
                     print_json(&serde_json::json!({"ok": true}))?;
                 }
                 FormatArg::Sp => {
-                    let roots = svc.import_superproductivity(&text).await?;
+                    let roots = svc
+                        .import_superproductivity(&text, parent_id.as_ref())
+                        .await?;
                     print_json(&roots)?;
                 }
             }
@@ -546,4 +570,21 @@ fn read_stdin() -> anyhow::Result<String> {
     let mut buf = String::new();
     io::stdin().read_to_string(&mut buf).context("read stdin")?;
     Ok(buf)
+}
+
+/// Title for the default `import --parent` wrapper task: the file's name plus
+/// its modification date (local time), e.g. "notes.md 2026-07-12".
+fn dated_wrapper_title(file: &std::path::Path) -> anyhow::Result<String> {
+    let modified = std::fs::metadata(file)
+        .with_context(|| format!("read metadata for {}", file.display()))?
+        .modified()
+        .with_context(|| format!("read mtime for {}", file.display()))?;
+    let date = jiff::Timestamp::try_from(modified)?
+        .to_zoned(jiff::tz::TimeZone::system())
+        .date();
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(format!("{name} {date}"))
 }

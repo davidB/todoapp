@@ -378,7 +378,11 @@ tda q save <name> <...same flags...>             # save a parameterized query
 tda q run <name> [--as <actor>] [--under <task>] [--tag <t>]   # bind params at run time
 
 tda export <id|--query name> --format md|json
-tda import <file> --format md|json
+tda import <file> --format md|json [--parent root|default|<id>]
+  # --parent omitted or "default": wrap the import in a new root task named
+  #   "<filename> <file mtime date>"
+  # --parent root: attach top-level items directly at the root (old behavior)
+  # --parent <id>: attach top-level items under that existing task
 tda template save <id> <name>    tda template apply <name> --to <id>
 ```
 

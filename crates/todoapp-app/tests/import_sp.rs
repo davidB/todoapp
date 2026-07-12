@@ -87,7 +87,7 @@ async fn imports_projects_hierarchy_tags_due_time_issue_ref_attachment_and_archi
     };
 
     let roots = svc
-        .import_superproductivity(&fixture().to_string())
+        .import_superproductivity(&fixture().to_string(), None)
         .await
         .unwrap();
 
