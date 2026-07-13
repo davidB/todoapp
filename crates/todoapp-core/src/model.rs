@@ -255,6 +255,20 @@ impl Component for IssueRef {
     const NAME: &'static str = "issueref";
 }
 
+/// `Workspace` capability: binds a task (and, by ancestor lookup, its subtree)
+/// to a project folder/repo. `name` is the stable cross-machine identity;
+/// `path` is only the *default* local folder — per-machine overrides live in
+/// local config (keyed by `name`), never in the store, so a shared database
+/// stays portable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    pub name: String,
+    pub path: Option<String>,
+}
+impl Component for Workspace {
+    const NAME: &'static str = "workspace";
+}
+
 /// A day of the week, for [`RepeatCycle::Weekly`]. A local enum (not jiff's)
 /// so serde stays as simple as [`Status`]'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

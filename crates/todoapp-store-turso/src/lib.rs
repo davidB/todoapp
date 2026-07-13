@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema_005_timelog.sql"),
     include_str!("schema_006_archived.sql"),
     include_str!("schema_007_attachments.sql"),
+    include_str!("schema_008_workspace.sql"),
 ];
 
 pub struct TursoStore {
@@ -134,6 +135,7 @@ fn ctable(name: &str) -> &'static str {
         "assignments" => "c_assignment",
         "recurrence" => "c_recurrence",
         "issueref" => "c_issueref",
+        "workspace" => "c_workspace",
         "timelog" => "c_timelog",
         "archived" => "c_archived",
         "attachments" => "c_attachment",
@@ -148,6 +150,7 @@ fn json_blob_table(name: &str) -> Option<&'static str> {
     match name {
         "recurrence" => Some("c_recurrence"),
         "issueref" => Some("c_issueref"),
+        "workspace" => Some("c_workspace"),
         _ => None,
     }
 }
@@ -586,6 +589,7 @@ impl TaskEntityStore for TursoStore {
             "c_assignment",
             "c_recurrence",
             "c_issueref",
+            "c_workspace",
             "c_timelog",
             "c_archived",
             "c_attachment",

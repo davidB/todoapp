@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use todoapp_core::{
     Attachment, AttachmentKind, Attachments, Command, ComponentStore, Date, Due, Duration, Id,
     IssueRef, Link, LinkKind, Position, Recurrence, Status, Tags, TaskEntityStore, Title,
-    extract_title_syntax,
+    Workspace, extract_title_syntax,
 };
 
 use crate::service::{Error, Services, TaskSnapshot};
@@ -159,6 +159,13 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         issue_ref: Option<IssueRef>,
     ) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetIssueRef(issue_ref)).await
+    }
+    pub async fn set_workspace(
+        &self,
+        id: &Id,
+        workspace: Option<Workspace>,
+    ) -> Result<TaskSnapshot, Error> {
+        self.run(id, Command::SetWorkspace(workspace)).await
     }
     pub async fn set_time_log(
         &self,

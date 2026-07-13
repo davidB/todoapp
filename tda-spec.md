@@ -47,11 +47,12 @@ The same domain is reachable through a CLI, a TUI, an HTTP API, and (later) a GU
 | Term | Meaning |
 |---|---|
 | **Task** | The atomic unit: a stable identity (id + timestamps) that **carries a set of capabilities** rather than a fixed field list. Required: `Title`, `Status`. Optional capabilities attach à la carte. |
-| **Capability** | A composable unit of data + behaviour attached to a task: `Status`, `Notes` (Markdown), `Schedule` (due date, optionally with time-of-day), `Estimate` (ETA), `TimeSpent`, `TimeLog` (per-day breakdown), `Tags` (also settable via the `#tag` title shorthand, `FR-33`), `Assignment`, `Recurrence`, `IssueRef`, `Attachments`, `Archived`. A capability may define **(a) data**, **(b) an aggregation** (how it rolls up a subtree), and **(c) guards** (which commands it allows/denies). Tasks differ by which capabilities they hold — composition, not an OOP god-struct. Adding a capability touches nothing existing. |
+| **Capability** | A composable unit of data + behaviour attached to a task: `Status`, `Notes` (Markdown), `Schedule` (due date, optionally with time-of-day), `Estimate` (ETA), `TimeSpent`, `TimeLog` (per-day breakdown), `Tags` (also settable via the `#tag` title shorthand, `FR-33`), `Assignment`, `Recurrence`, `IssueRef`, `Workspace`, `Attachments`, `Archived`. A capability may define **(a) data**, **(b) an aggregation** (how it rolls up a subtree), and **(c) guards** (which commands it allows/denies). Tasks differ by which capabilities they hold — composition, not an OOP god-struct. Adding a capability touches nothing existing. |
 | **Status** | A required capability. Values: `draft`, `todo`, `wip`, `paused`, `done` (see [§8](#8-status-lifecycle)) — `[DECISION]` any value may be set to any other, freely, no transition guard. Aggregates to subtree progress. `blocked` is **not** a stored value — it's derived from unmet `blocks` deps. |
 | **Assignment** | An *optional* capability: 0–n assignees (`Person` or `Agent`). Its presence changes `Claim` semantics (see [§8](#8-status-lifecycle)): absent/empty ⇒ anyone may claim; present ⇒ only a listed assignee may claim. Also settable via the `@name` title shorthand (`FR-32`): typing `@name` in a title adds `name` as an assignee and strips the mention from the stored title. |
 | **Recurrence** | An *optional* capability: a repeat rule (`daily`/`weekly`-by-weekday/`monthly`). **[DECISION]** No per-occurrence task spawning — a recurring task **resets in place**: completing it (`SetStatus(done)`) recomputes its `Schedule` from the rule and its own current due date, and flips `Status` back to `todo`, instead of staying `done`. A task with no `Schedule` can't meaningfully recur, so it just completes normally. |
 | **IssueRef** | An *optional* capability: a static `{provider, id, url}` reference to an external issue tracker (e.g. a GitHub/Jira issue) — no live sync, no computed URL. Mainly populated by imports. |
+| **Workspace** | An *optional* capability (`FR-35`): `{name, path?}` binding a task — and, via nearest-ancestor lookup, its subtree — to a project folder/repo. Set on a project's root task by convention (`tda ws init`). `name` is the stable cross-machine identity; `path` is only a *default* local folder — per-machine overrides live in the local config's `[workspaces]` table (`name = "/local/path"`), never in the store, so a shared database stays portable. `--here` on queries resolves cwd → the workspace root whose effective path contains it (deepest match wins). |
 | **Attachments** | An *optional* capability: a list of `{id, kind (link/file/image), title, url, blob, mime}`. `link` never has a `blob`; `file`/`image` may reference actual bytes stored via the `BlobStore` port (content-addressed) or just carry a source `url`/path when bytes aren't available (e.g. an import that only has metadata). |
 | **Archived** | An *optional*, presence-only capability, **orthogonal to `Status`** (a task can be `done` and archived, or archived without being `done`) — resolves [§13](#13-open-questions) Q4: archived tasks stay in the store (not moved to a separate structure) and are hidden from default views (`what-next`, `due-today`) by those views passing `archived:false`; `Filter.archived` itself stays neutral (`None` = no restriction). |
 | **Link** | A typed, *ordered* directed edge between two tasks. Types: `child` (structure) and `blocks` (dependency). The `child` graph is a **single-parent tree** (each task has exactly one structural home). The `blocks` graph is a **DAG**. |
@@ -113,6 +114,8 @@ Grouped and given IDs so the roadmap can reference them.
 - `FR-32` `@name` title syntax: on create or edit, `@name` in a task's title (outside inline/fenced code spans) is parsed out — stripped from the stored title — and adds `name` as an assignee (additive, idempotent; see `FR-2`/`FR-10`). The first of a planned family of special title syntax.
 - `FR-33` `#tag` title syntax: on create or edit, `#tag` in a task's title (outside inline/fenced code spans) is parsed out — stripped from the stored title — and adds `tag` to the task's `Tags` (additive, idempotent; see `FR-2`/`FR-24`). Shares one scan with `FR-32`'s `@name` (`extract_title_syntax` in `todoapp-core`) so the title's code spans are only walked once; a future title syntax should extend that same scan rather than add a parallel parser.
 - `FR-34` `[...]` due/recurrence title syntax: on create or edit, a `[...]` bracket in a task's title (outside inline/fenced code spans) is parsed out — stripped from the stored title only if its content parses — and sets the task's `Schedule` or `Recurrence`. Dispatch order: `YYYY-MM-DD[ HH:MM]` (absolute due), `HH:MM` (time-only, resolved against today), a weekday name (next occurrence), else a todoist/org-mode-style recurrence expression (`daily`, `every N days`, `every mon,wed,fri`, `monthly`, ...; mapped onto the existing `RepeatCycle` cases, not a full RRULE engine). Shares `FR-32`/`FR-33`'s single scan (`extract_title_syntax`); "today" can't be read inside that pure core function (spec §5), so bracket parsing yields an unresolved `DueSpec`, resolved against `Clock::today()` at the `todoapp-app` call site. The same grammar (`DueSpec::parse`/`Recurrence::parse` in `todoapp-core`) is reused wherever a due date or recurrence is set from free text outside the title: the TUI's manual due-date edit field and the CLI's `tda set --due`/`--recurrence` flags — one parser, several entry points.
+- `FR-35` `Workspace` capability (see [§3](#3-core-concepts-glossary)): binds a task subtree to a project folder/repo via `{name, path?}` on the subtree's root task. Tasks inherit it by nearest-ancestor lookup (`workspace_of`); cwd resolves to a workspace root by scanning root tasks for the deepest *effective* path containing it (`workspace_root_for`). **[DECISION]** The stored `path` is only a default: per-machine overrides live in the local config's `[workspaces]` table, keyed by `name` — a shared database stays portable, folder mappings stay local. Surfaced in the CLI as `tda ws [init]` and the `--here` query flag.
+- `FR-36` Agent work loop over the CLI (refines `FR-12`/`FR-18`): `tda show <id>` (snapshot + parent/breadcrumb/children/blocked/workspace), `tda context <id>` (`FR-12` as prompt-ready Markdown: ancestor titles+notes, the task, children, workspace folder — self-contained so an agent can start a fresh session from it), `tda note <id>` (append-only timestamped progress notes; `set --notes` replaces), and `tda next --claimable --as <actor>` (only tasks the actor may claim per `FR-11`: unassigned or listing them, not blocked). Actor ids for agents follow the `<harness>/<model>` convention (e.g. `claude-code/fable-5`) — plain `Id` strings, no schema. The harness-side workflow lives in `skills/tda/SKILL.md`.
 
 **I/O**
 - `FR-16` Export any list or branch to Markdown task list and to JSON.
@@ -371,11 +374,14 @@ tda link <from> <to> --kind blocks
 tda assign <id> <actor>          tda claim <id> --as <actor>
 tda set <id> [--title ..] [--notes ..] [--status draft|todo|wip|paused|done] [--due ..]
 tda tag <id> <tag>...
+tda show <id>                    # one task + parent/breadcrumb/children/blocked/workspace (FR-36)
+tda context <id>                 # prompt-ready Markdown context: ancestors' notes etc. (FR-12/FR-36)
+tda note <id> <text> [--as <actor>]   # append-only timestamped progress note (FR-36)
 
 # Search & queries (most "lists" live here)
 tda find <text>                                  # free-text (FR-23)
-tda q [--status todo] [--as <actor>] [--under <task>] [--tag <t>] [--due today|overdue] [--sort priority|due]
-tda next [--as <actor>] [--under <task>] [--tag <t>]   # built-in: status:todo, by priority (FR-25)
+tda q [--status todo] [--as <actor>] [--under <task>|--here] [--tag <t>] [--due today|overdue] [--sort priority|due]
+tda next [--as <actor>] [--under <task>|--here] [--tag <t>] [--claimable]   # built-in: status:todo, by priority (FR-25; --claimable per FR-11/FR-36)
 tda due today|overdue
 tda q save <name> <...same flags...>             # save a parameterized query
 tda q run <name> [--as <actor>] [--under <task>] [--tag <t>]   # bind params at run time
@@ -390,6 +396,9 @@ tda template save <id> <name>    tda template apply <name> --to <id>
 
 tda db init                      # create a local ./.tda/tda.db (git-style, idempotent)
 tda db path                      # print the resolved database path
+
+tda ws init [<path>] [--name <n>] [--root <id>]   # bind a folder to a workspace root task (FR-35)
+tda ws                           # print the workspace root resolved for cwd
 ```
 
 **[DECISION] Database resolution** (CLI + TUI, shared): `--db <path>` flag >

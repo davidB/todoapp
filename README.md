@@ -164,7 +164,15 @@ child task can see its ancestors' titles/notes) were designed with agents in
 mind from the start, not bolted on:
 
 - **Today**: the `tda` CLI is scriptable and gives structured JSON output,
-  usable by any agent that can shell out.
+  usable by any agent that can shell out. The agent loop is first-class:
+  `tda next --claimable --here` (find work for the current repo), `tda claim`,
+  `tda context` (prompt-ready Markdown brief with ancestor notes and the
+  workspace folder), `tda note` (append-only progress log), `tda show`.
+  [`skills/tda/SKILL.md`](skills/tda/SKILL.md) documents the whole workflow —
+  drop it into `.claude/skills/tda/` (Claude Code) or quote it in your
+  AGENTS.md.
+- **Workspaces**: `tda ws init` binds a task subtree to a repo/folder, so
+  agents can scope searches to the current project and `cd` to a task's code.
 - **Planned** ([`tda-spec.md` §10](tda-spec.md#10-roadmap), milestone M5): an
   HTTP API (`todoapp-api`) and an MCP server (`todoapp-mcp`) for agents that
   speak those protocols directly.

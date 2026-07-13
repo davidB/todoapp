@@ -13,7 +13,8 @@ use todoapp_core::{
     Archived, Assignment, Assignments, Attachment, Attachments, BlobStore, Clock,
     CollectionRepository, Command, ComponentStore, Date, DecideCtx, Denied, Due, Duration,
     Estimate, Id, IdGenerator, IssueRef, LinkKind, LinkRepository, Notes, QueryEngine, Recurrence,
-    Schedule, Status, Tags, TaskEntityStore, TimeLog, TimeSpent, Timestamp, Title, apply, decide,
+    Schedule, Status, Tags, TaskEntityStore, TimeLog, TimeSpent, Timestamp, Title, Workspace,
+    apply, decide,
 };
 
 pub struct Services<'a, St> {
@@ -44,6 +45,9 @@ pub struct TaskSnapshot {
     pub assignments: Vec<Assignment>,
     pub recurrence: Option<Recurrence>,
     pub issue_ref: Option<IssueRef>,
+    /// `default` so pre-workspace JSON exports still import (FR-17).
+    #[serde(default)]
+    pub workspace: Option<Workspace>,
     pub time_log: BTreeMap<Date, Duration>,
     pub archived: bool,
     pub attachments: Vec<Attachment>,
@@ -130,6 +134,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 .unwrap_or_default(),
             recurrence: self.store.get::<Recurrence>(id).await,
             issue_ref: self.store.get::<IssueRef>(id).await,
+            workspace: self.store.get::<Workspace>(id).await,
             time_log: self
                 .store
                 .get::<TimeLog>(id)
@@ -179,6 +184,9 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         }
         if let Some(r) = &t.issue_ref {
             self.store.set(&t.id, r.clone()).await;
+        }
+        if let Some(w) = &t.workspace {
+            self.store.set(&t.id, w.clone()).await;
         }
         if !t.time_log.is_empty() {
             self.store.set(&t.id, TimeLog(t.time_log.clone())).await;
@@ -231,6 +239,47 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
             .into_iter()
             .map(|l| l.to)
             .collect()
+    }
+
+    /// Nearest `Workspace` on `id` or an ancestor — a subtree inherits its
+    /// project binding (FR-12 companion: tells an agent where to work).
+    pub async fn workspace_of(&self, id: &Id) -> Option<Workspace> {
+        let mut cur = Some(id.clone());
+        while let Some(c) = cur {
+            if let Some(w) = self.store.get::<Workspace>(&c).await {
+                return Some(w);
+            }
+            cur = self.parent_of(&c).await;
+        }
+        None
+    }
+
+    /// The root task whose workspace's *effective* path (per-machine override
+    /// from local config, else the stored default) contains `path` — git-style,
+    /// deepest match wins. Workspaces live on root tasks by convention.
+    // ponytail: O(roots) scan — workspaces are few; port-level query if it ever matters.
+    pub async fn workspace_root_for(
+        &self,
+        path: &std::path::Path,
+        overrides: &BTreeMap<String, String>,
+    ) -> Option<Id> {
+        let mut best: Option<(Id, usize)> = None;
+        for id in self.roots().await {
+            let Some(w) = self.store.get::<Workspace>(&id).await else {
+                continue;
+            };
+            let effective = overrides.get(&w.name).cloned().or(w.path);
+            let Some(p) = effective else { continue };
+            let p = std::path::PathBuf::from(p);
+            if path.starts_with(&p)
+                && best
+                    .as_ref()
+                    .is_none_or(|(_, d)| p.components().count() > *d)
+            {
+                best = Some((id, p.components().count()));
+            }
+        }
+        best.map(|(id, _)| id)
     }
 
     /// Derived `blocked` (spec §8): some incoming `blocks` edge whose blocker

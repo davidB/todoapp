@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::model::{
     Archived, Assignment, Assignments, Attachment, Attachments, Estimate, Id, IssueRef, Notes,
-    Recurrence, Schedule, Status, Tags, TimeLog, TimeSpent, Title,
+    Recurrence, Schedule, Status, Tags, TimeLog, TimeSpent, Title, Workspace,
 };
 use crate::ports::ComponentStore;
 use crate::temporal::{Date, Due, Duration};
@@ -38,6 +38,7 @@ pub enum Command {
     Claim(Id),
     SetRecurrence(Option<Recurrence>),
     SetIssueRef(Option<IssueRef>),
+    SetWorkspace(Option<Workspace>),
     SetTimeLog(BTreeMap<Date, Duration>),
     SetArchived(bool),
     AddAttachment(Attachment),
@@ -61,6 +62,7 @@ pub enum Event {
     Claimed(Id),
     RecurrenceSet(Option<Recurrence>),
     IssueRefSet(Option<IssueRef>),
+    WorkspaceSet(Option<Workspace>),
     TimeLogSet(BTreeMap<Date, Duration>),
     ArchivedSet(bool),
     AttachmentAdded(Attachment),
@@ -165,6 +167,8 @@ pub async fn apply<St: ComponentStore>(store: &St, id: &Id, event: &Event) {
         Event::RecurrenceSet(None) => store.remove::<Recurrence>(id).await,
         Event::IssueRefSet(Some(r)) => store.set(id, r.clone()).await,
         Event::IssueRefSet(None) => store.remove::<IssueRef>(id).await,
+        Event::WorkspaceSet(Some(w)) => store.set(id, w.clone()).await,
+        Event::WorkspaceSet(None) => store.remove::<Workspace>(id).await,
         Event::TimeLogSet(m) => {
             if m.is_empty() {
                 store.remove::<TimeLog>(id).await;
@@ -255,6 +259,10 @@ async fn events_for<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -> V
         Command::SetIssueRef(r) => {
             let cur = store.get::<IssueRef>(id).await;
             no_op_or(&cur == r, Event::IssueRefSet(r.clone()))
+        }
+        Command::SetWorkspace(w) => {
+            let cur = store.get::<Workspace>(id).await;
+            no_op_or(&cur == w, Event::WorkspaceSet(w.clone()))
         }
         Command::SetTimeLog(m) => {
             let cur = store.get::<TimeLog>(id).await.unwrap_or_default();

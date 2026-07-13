@@ -48,6 +48,23 @@ fn tui_config_path() -> PathBuf {
         .join("tda/tui.toml")
 }
 
+/// `[workspaces]` table of the config file: workspace name → per-machine local
+/// path override. The stored `Workspace.path` is only a default — a shared DB
+/// stays portable, folder mappings are local. Missing file/table ⇒ empty.
+#[must_use]
+pub fn workspace_overrides() -> std::collections::BTreeMap<String, String> {
+    #[derive(serde::Deserialize, Default)]
+    struct Ws {
+        #[serde(default)]
+        workspaces: std::collections::BTreeMap<String, String>,
+    }
+    std::fs::read_to_string(tui_config_path())
+        .ok()
+        .and_then(|s| toml::from_str::<Ws>(&s).ok())
+        .unwrap_or_default()
+        .workspaces
+}
+
 fn load_tui_config() -> anyhow::Result<(Config, Keymap)> {
     let user_toml = std::fs::read_to_string(tui_config_path()).ok();
     Ok((

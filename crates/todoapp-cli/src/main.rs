@@ -9,7 +9,7 @@ use serde::Serialize;
 use todoapp_app::{Anchor, Services, TaskSnapshot};
 use todoapp_core::{
     Clock, ComponentStore, Dir, DueFilter, DueSpec, Filter, Id, Query, Recurrence, SortField,
-    SortKey, Status, TaskEntityStore,
+    SortKey, Status, TaskEntityStore, Workspace,
 };
 use todoapp_tui::{SystemClock, UlidGen, make_svc};
 
@@ -42,6 +42,55 @@ struct TreeLine {
     depth: usize,
     #[serde(flatten)]
     task: TaskSnapshot,
+}
+
+/// `show`'s one-stop read for agents: the snapshot plus everything needed to
+/// navigate from it (parent for sibling-adds, children, derived blocked,
+/// inherited workspace with the *effective* local path).
+#[derive(Serialize)]
+struct ShowOut {
+    #[serde(flatten)]
+    task: TaskSnapshot,
+    parent: Option<Id>,
+    breadcrumb: Vec<String>,
+    children: Vec<ChildLine>,
+    blocked: bool,
+    workspace: Option<Workspace>,
+}
+
+#[derive(Serialize)]
+struct ChildLine {
+    id: Id,
+    title: String,
+    status: Status,
+}
+
+/// Inherited workspace with the per-machine config override applied to `path`.
+async fn effective_workspace<St: ComponentStore + TaskEntityStore>(
+    svc: &Services<'_, St>,
+    id: &Id,
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> Option<Workspace> {
+    let mut w = svc.workspace_of(id).await?;
+    if let Some(p) = overrides.get(&w.name) {
+        w.path = Some(p.clone());
+    }
+    Some(w)
+}
+
+/// Resolve `--here`: the workspace root task containing the current directory.
+async fn here_root<St: ComponentStore + TaskEntityStore>(
+    svc: &Services<'_, St>,
+) -> anyhow::Result<Id> {
+    let cwd = std::env::current_dir().context("current dir")?;
+    svc.workspace_root_for(&cwd, &todoapp_tui::workspace_overrides())
+        .await
+        .with_context(|| {
+            format!(
+                "no workspace found for {} (see `tda ws init`)",
+                cwd.display()
+            )
+        })
 }
 
 // ---- CLI arg types ----------------------------------------------------------
@@ -203,6 +252,20 @@ enum Cmd {
     },
     /// Add one or more tags to a task.
     Tag { id: String, tags: Vec<String> },
+    /// Show one task in full: snapshot + parent, breadcrumb, children,
+    /// blocked, inherited workspace.
+    Show { id: String },
+    /// Print prompt-ready Markdown context for a task: ancestor titles+notes,
+    /// the task itself, its children, and the workspace folder.
+    Context { id: String },
+    /// Append a timestamped progress note to a task's notes (never clobbers).
+    Note {
+        id: String,
+        text: String,
+        /// Author shown on the note (e.g. claude-code/sonnet-5).
+        #[arg(long = "as", default_value = "me")]
+        actor: String,
+    },
     /// Free-text search across titles and notes.
     Find { text: String },
     /// Query tasks with filters.
@@ -219,6 +282,9 @@ enum Cmd {
         due: Option<DuePeriodArg>,
         #[arg(long)]
         sort: Vec<SortArg>,
+        /// Scope to the workspace containing the current directory.
+        #[arg(long, conflicts_with = "under")]
+        here: bool,
     },
     /// What to work on next (status:todo, by priority).
     Next {
@@ -228,6 +294,13 @@ enum Cmd {
         under: Option<String>,
         #[arg(long)]
         tag: Option<String>,
+        /// Only tasks the --as actor may claim: unassigned or assigned to
+        /// them, and not blocked (FR-11).
+        #[arg(long, requires = "assignee")]
+        claimable: bool,
+        /// Scope to the workspace containing the current directory.
+        #[arg(long, conflicts_with = "under")]
+        here: bool,
     },
     /// Tasks due today or overdue.
     Due { period: DuePeriodArg },
@@ -254,6 +327,30 @@ enum Cmd {
     Db {
         #[command(subcommand)]
         cmd: DbCmd,
+    },
+    /// Workspace binding: task subtree ↔ project folder. Without a subcommand,
+    /// prints the workspace root resolved for the current directory.
+    Ws {
+        #[command(subcommand)]
+        cmd: Option<WsCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum WsCmd {
+    /// Bind a folder (default: cwd) to a workspace root task — creates the
+    /// root task unless --root points at an existing one. The stored path is
+    /// only a default; override it per machine via the config's [workspaces]
+    /// table (name = "/local/path").
+    Init {
+        /// Folder to bind (default: current directory).
+        path: Option<PathBuf>,
+        /// Workspace name (default: the folder's name).
+        #[arg(long)]
+        name: Option<String>,
+        /// Mark this existing task as the workspace root instead of creating one.
+        #[arg(long)]
+        root: Option<String>,
     },
 }
 
@@ -451,6 +548,56 @@ async fn main() -> anyhow::Result<()> {
             print_json(&task)?;
         }
 
+        Cmd::Show { id } => {
+            let id = Id::new(id);
+            let task = svc.snapshot(&id).await?;
+            let children = {
+                let mut out = Vec::new();
+                for l in svc.children_of(&id).await {
+                    if let Ok(c) = svc.snapshot(&l.to).await {
+                        out.push(ChildLine {
+                            id: c.id,
+                            title: c.title,
+                            status: c.status,
+                        });
+                    }
+                }
+                out
+            };
+            let show = ShowOut {
+                parent: svc.parent_of(&id).await,
+                breadcrumb: svc.breadcrumb(&id).await,
+                children,
+                blocked: svc.is_blocked(&id).await,
+                workspace: effective_workspace(&svc, &id, &todoapp_tui::workspace_overrides())
+                    .await,
+                task,
+            };
+            print_json(&show)?;
+        }
+
+        Cmd::Context { id } => {
+            let md = svc
+                .context_md(&Id::new(id), &todoapp_tui::workspace_overrides())
+                .await?;
+            write!(io::stdout(), "{md}")?;
+        }
+
+        Cmd::Note { id, text, actor } => {
+            let id = Id::new(id);
+            let task = svc.snapshot(&id).await?;
+            let stamp = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M");
+            let entry = format!("---\n{actor} {stamp}\n{text}");
+            // ponytail: read-modify-write, single-user; make it a command if
+            // concurrent writers ever matter.
+            let notes = match task.notes {
+                Some(n) => format!("{n}\n\n{entry}"),
+                None => entry,
+            };
+            let task = svc.set_notes(&id, Some(notes)).await?;
+            print_json(&task)?;
+        }
+
         Cmd::Find { text } => {
             let hits = svc
                 .evaluate(&Query {
@@ -471,17 +618,23 @@ async fn main() -> anyhow::Result<()> {
             tag,
             due,
             sort,
+            here,
         } => {
             let due_filter = due.map(|d| match d {
                 DuePeriodArg::Today => DueFilter::Today,
                 DuePeriodArg::Overdue => DueFilter::Overdue,
             });
+            let within = if here {
+                Some(here_root(&svc).await?)
+            } else {
+                under.map(Id::new)
+            };
             let hits = svc
                 .evaluate(&Query {
                     filter: Filter {
                         status: status.into_iter().map(Status::from).collect(),
                         assignee: assignee.map(Id::new),
-                        within: under.map(Id::new),
+                        within,
                         tags: tag,
                         due: due_filter,
                         ..Default::default()
@@ -496,10 +649,21 @@ async fn main() -> anyhow::Result<()> {
             assignee,
             under,
             tag,
+            claimable,
+            here,
         } => {
-            let hits = svc
-                .what_next_for(assignee.map(Id::new), under.map(Id::new), tag)
-                .await;
+            let within = if here {
+                Some(here_root(&svc).await?)
+            } else {
+                under.map(Id::new)
+            };
+            let hits = if claimable {
+                // clap's `requires` already enforces --as; context is belt-and-braces
+                let actor = Id::new(assignee.context("--claimable requires --as")?);
+                svc.claimable_for(&actor, within, tag).await
+            } else {
+                svc.what_next_for(assignee.map(Id::new), within, tag).await
+            };
             print_json(&hits)?;
         }
 
@@ -605,6 +769,48 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+
+        Cmd::Ws { cmd } => match cmd {
+            Some(WsCmd::Init { path, name, root }) => {
+                let folder = match path {
+                    Some(p) => p,
+                    None => std::env::current_dir().context("current dir")?,
+                };
+                let folder = folder
+                    .canonicalize()
+                    .with_context(|| format!("canonicalize {}", folder.display()))?;
+                let name = name.unwrap_or_else(|| {
+                    folder
+                        .file_name()
+                        .map_or_else(|| "workspace".into(), |n| n.to_string_lossy().into_owned())
+                });
+                let root_id = match root {
+                    Some(id) => Id::new(id),
+                    None => svc.create(name.clone(), None, Status::Todo, []).await?.id,
+                };
+                let ws = Workspace {
+                    name,
+                    path: Some(folder.to_string_lossy().into_owned()),
+                };
+                let task = svc.set_workspace(&root_id, Some(ws)).await?;
+                print_json(&task)?;
+            }
+            None => {
+                let cwd = std::env::current_dir().context("current dir")?;
+                let overrides = todoapp_tui::workspace_overrides();
+                let root = svc.workspace_root_for(&cwd, &overrides).await;
+                match root {
+                    Some(id) => {
+                        let ws = effective_workspace(&svc, &id, &overrides).await;
+                        print_json(&serde_json::json!({"root": id, "workspace": ws}))?;
+                    }
+                    None => anyhow::bail!(
+                        "no workspace found for {} (see `tda ws init`)",
+                        cwd.display()
+                    ),
+                }
+            }
+        },
 
         Cmd::Attach { id, file } => {
             let bytes = std::fs::read(&file).with_context(|| format!("read {}", file.display()))?;

@@ -77,6 +77,27 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         .await
     }
 
+    /// `claimable-for`: `what-next` restricted to tasks `actor` may actually
+    /// claim (FR-11): unassigned (anyone may claim) or listing `actor`, and not
+    /// blocked (the claim guard would deny those anyway).
+    pub async fn claimable_for(
+        &self,
+        actor: &Id,
+        within: Option<Id>,
+        tag: Option<String>,
+    ) -> Vec<QueryHit> {
+        // ponytail: post-filter over the todo set, not SQL — N is small.
+        let mut out = Vec::new();
+        for h in self.what_next_for(None, within, tag).await {
+            let allowed = h.task.assignments.is_empty()
+                || h.task.assignments.iter().any(|a| &a.actor == actor);
+            if allowed && !self.is_blocked(&h.task.id).await {
+                out.push(h);
+            }
+        }
+        out
+    }
+
     /// `due-today`: `due:today`, sorted by due then priority.
     pub async fn due_today(&self) -> Vec<QueryHit> {
         self.evaluate(&Query {
@@ -101,8 +122,8 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
 
     // ---- internals --------------------------------------------------------
 
-    /// Ancestor titles from root down to the immediate parent.
-    async fn breadcrumb(&self, id: &Id) -> Vec<String> {
+    /// Ancestor titles from root down to the immediate parent (FR-14).
+    pub async fn breadcrumb(&self, id: &Id) -> Vec<String> {
         let mut chain = Vec::new();
         let mut cur = self.parent_of(id).await;
         while let Some(pid) = cur {

@@ -220,6 +220,7 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 assignments: vec![],
                 recurrence: None,
                 issue_ref,
+                workspace: None,
                 time_log,
                 archived: *archived,
                 attachments,

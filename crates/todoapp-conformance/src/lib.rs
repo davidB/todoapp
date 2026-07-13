@@ -519,6 +519,122 @@ macro_rules! conformance_suite {
                 s.delete_task(&a.id, false).await.unwrap();
                 assert!(!s.is_blocked(&b.id).await);
             }
+
+            #[tokio::test]
+            async fn workspace_inherits_resolves_and_round_trips() {
+                use ::todoapp_core::Workspace;
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let root = s.create("Proj", None, Status::Todo, []).await.unwrap();
+                let child = s
+                    .create("Sub", Some(&root.id), Status::Todo, [])
+                    .await
+                    .unwrap();
+                let ws = Workspace {
+                    name: "proj".into(),
+                    path: Some("/stored/proj".into()),
+                };
+                let root = s.set_workspace(&root.id, Some(ws.clone())).await.unwrap();
+                assert_eq!(root.workspace, Some(ws.clone()));
+
+                // subtree inherits via ancestor lookup
+                assert_eq!(s.workspace_of(&child.id).await, Some(ws.clone()));
+
+                // cwd → workspace root; config override beats the stored path
+                let none = ::std::collections::BTreeMap::new();
+                let stored = ::std::path::Path::new("/stored/proj/src");
+                assert_eq!(
+                    s.workspace_root_for(stored, &none).await,
+                    Some(root.id.clone())
+                );
+                assert_eq!(
+                    s.workspace_root_for(::std::path::Path::new("/elsewhere"), &none)
+                        .await,
+                    None
+                );
+                let over: ::std::collections::BTreeMap<String, String> =
+                    [("proj".to_string(), "/local/proj".to_string())].into();
+                assert_eq!(
+                    s.workspace_root_for(::std::path::Path::new("/local/proj/src"), &over)
+                        .await,
+                    Some(root.id.clone())
+                );
+                assert_eq!(s.workspace_root_for(stored, &over).await, None);
+
+                // JSON export/import round-trips the component
+                let json = s.export_json(&root.id).await.unwrap();
+                svc!(store2, clock2, ids2);
+                let s2 = services!(store2, clock2, ids2);
+                s2.import_json(&json, None).await.unwrap();
+                assert_eq!(s2.export_json(&root.id).await.unwrap(), json);
+            }
+
+            #[tokio::test]
+            async fn claimable_for_hides_foreign_assigned_and_blocked() {
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let open = s.create("open", None, Status::Todo, []).await.unwrap();
+                let mine = s.create("mine", None, Status::Todo, []).await.unwrap();
+                s.assign(&mine.id, Id::new("me")).await.unwrap();
+                let theirs = s.create("theirs", None, Status::Todo, []).await.unwrap();
+                s.assign(&theirs.id, Id::new("someone-else")).await.unwrap();
+                let blocked = s.create("blocked", None, Status::Todo, []).await.unwrap();
+                s.block(&open.id, &blocked.id).await.unwrap();
+
+                let hits = s.claimable_for(&Id::new("me"), None, None).await;
+                let got: Vec<Id> = hits.into_iter().map(|h| h.task.id).collect();
+                assert_eq!(got, vec![open.id, mine.id]);
+            }
+
+            #[tokio::test]
+            async fn context_md_is_self_contained() {
+                use ::todoapp_core::Workspace;
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let root = s.create("Proj", None, Status::Todo, []).await.unwrap();
+                s.set_notes(&root.id, Some("Project goal.".into()))
+                    .await
+                    .unwrap();
+                s.set_workspace(
+                    &root.id,
+                    Some(Workspace {
+                        name: "proj".into(),
+                        path: Some("/w/proj".into()),
+                    }),
+                )
+                .await
+                .unwrap();
+                let t = s
+                    .create("Feature", Some(&root.id), Status::Todo, [])
+                    .await
+                    .unwrap();
+                s.set_notes(&t.id, Some("Do the thing.".into()))
+                    .await
+                    .unwrap();
+                s.add_tag(&t.id, "cli").await.unwrap();
+                s.assign(&t.id, Id::new("claude-code/sonnet-5"))
+                    .await
+                    .unwrap();
+                s.create("Step 1", Some(&t.id), Status::Todo, [])
+                    .await
+                    .unwrap();
+
+                let md = s.context_md(&t.id, &Default::default()).await.unwrap();
+                assert_eq!(
+                    md,
+                    "# Task: Feature (`t2`)\n\n\
+                     Workspace: proj — `/w/proj`\n\
+                     Status: todo\n\
+                     Tags: cli\n\
+                     Assignees: claude-code/sonnet-5\n\n\
+                     Do the thing.\n\n\
+                     ## Ancestors (root → parent)\n\n\
+                     ### Proj (`t1`, todo)\n\n\
+                     Project goal.\n\n\
+                     ## Children\n\n\
+                     - Step 1 (`t3`, todo)\n"
+                );
+            }
         }
     };
 }
