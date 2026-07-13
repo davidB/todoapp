@@ -16,6 +16,7 @@ use todoapp_core::Status;
 
 use crate::app::{
     AppState, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View, VisibleItem,
+    WsEditor, WsPicker,
 };
 use crate::config::{ColumnKind, Config, Semantic};
 use crate::keymap::{Action, Keymap};
@@ -54,6 +55,12 @@ pub fn render(f: &mut Frame, app: &AppState) {
     }
     if let Some(form) = &app.edit_form {
         render_edit_form(f, area, form);
+    }
+    if let Some(picker) = &app.ws_picker {
+        render_ws_picker(f, area, picker);
+    }
+    if let Some(editor) = &app.ws_editor {
+        render_ws_editor(f, area, editor);
     }
     if matches!(app.view, View::Help) {
         render_help(f, area, &app.keymap);
@@ -636,6 +643,90 @@ fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::app::TaskEditForm) 
     if let Some((x, y)) = cursor_pos {
         f.set_cursor_position(Position::new(popup.x + 1 + x, popup.y + 1 + y));
     }
+}
+
+/// The workspace-assignment popup opened from the edit form's workspace
+/// field: existing workspaces, then inherited/none, then "(new…)".
+fn render_ws_picker(f: &mut Frame, area: Rect, picker: &WsPicker) {
+    let height = u16::try_from(picker.items.len() + 2).unwrap_or(u16::MAX);
+    let popup = centered_rect(area, 50, height);
+    let items: Vec<ListItem> = picker
+        .items
+        .iter()
+        .map(|item| ListItem::new(item.label.clone()))
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" assign workspace (enter select · esc cancel) "),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(picker.selected));
+    f.render_widget(Clear, popup);
+    f.render_stateful_widget(list, popup, &mut state);
+}
+
+/// The workspace management dialog: one row per known workspace (name /
+/// stored default path / this-machine config override), plus a fresh row
+/// for defining a new one. The focused cell is highlighted; a cell being
+/// typed into shows the in-progress text instead of the row's stored value.
+fn render_ws_editor(f: &mut Frame, area: Rect, editor: &WsEditor) {
+    let height = u16::try_from(editor.rows.len() + 3).unwrap_or(u16::MAX);
+    let popup = centered_rect(area, 80, height);
+    let (cur_r, cur_c) = editor.cursor;
+    let cell_text = |r: usize, c: usize, stored: &str| -> String {
+        if r == cur_r
+            && c == cur_c
+            && let Some(input) = &editor.editing
+        {
+            input.value().to_string()
+        } else {
+            stored.to_string()
+        }
+    };
+    let rows: Vec<Row> = editor
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(r, row)| {
+            let name = cell_text(r, 0, if row.is_new { "(new)" } else { &row.name });
+            let path = cell_text(r, 1, row.db_path.as_deref().unwrap_or(""));
+            let over = cell_text(r, 2, row.override_.as_deref().unwrap_or(""));
+            let style = |c: usize| {
+                if r == cur_r && c == cur_c {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                }
+            };
+            Row::new([
+                Cell::from(name).style(style(0)),
+                Cell::from(path).style(style(1)),
+                Cell::from(over).style(style(2)),
+            ])
+        })
+        .collect();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(30),
+            Constraint::Percentage(40),
+            Constraint::Percentage(30),
+        ],
+    )
+    .header(Row::new([
+        "name",
+        "default path (db)",
+        "override (this machine)",
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" workspaces (arrows move · enter edit/commit · esc cancel/close) "),
+    );
+    f.render_widget(Clear, popup);
+    f.render_widget(table, popup);
 }
 
 /// Title syntax hints (spec `FR-32`/`FR-33`/`FR-34`), appended to the

@@ -167,6 +167,25 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     ) -> Result<TaskSnapshot, Error> {
         self.run(id, Command::SetWorkspace(workspace)).await
     }
+    /// Renames a workspace and/or changes its stored default path, applied to
+    /// every task currently carrying `old_name` (the workspace editor's rename
+    /// / path-edit commit — covers both in one method since both start from
+    /// `Services::workspaces()`'s enumeration of carriers).
+    pub async fn update_workspace(&self, old_name: &str, new: Workspace) -> Result<(), Error> {
+        let carriers = self
+            .store
+            .list::<Workspace>()
+            .await
+            .into_iter()
+            .filter(|(_, w)| w.name == old_name)
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        for id in carriers {
+            self.run(&id, Command::SetWorkspace(Some(new.clone())))
+                .await?;
+        }
+        Ok(())
+    }
     pub async fn set_time_log(
         &self,
         id: &Id,

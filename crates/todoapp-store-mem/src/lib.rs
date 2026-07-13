@@ -55,6 +55,14 @@ impl ComponentStore for MemStore {
     async fn remove<C: Component>(&self, id: &Id) {
         self.comps.borrow_mut().remove(&(C::NAME, id.clone()));
     }
+    async fn list<C: Component>(&self) -> Vec<(Id, C)> {
+        self.comps
+            .borrow()
+            .iter()
+            .filter(|((name, _), _)| *name == C::NAME)
+            .filter_map(|((_, id), b)| b.downcast_ref::<C>().cloned().map(|c| (id.clone(), c)))
+            .collect()
+    }
 }
 
 #[async_trait(?Send)]

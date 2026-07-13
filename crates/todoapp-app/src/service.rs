@@ -282,6 +282,21 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         best.map(|(id, _)| id)
     }
 
+    /// Every distinct `Workspace` name in use, with its stored default path
+    /// (first non-`None` one seen) and every task id carrying it — feeds the
+    /// TUI's workspace picker and editor.
+    pub async fn workspaces(&self) -> BTreeMap<String, (Option<String>, Vec<Id>)> {
+        let mut out: BTreeMap<String, (Option<String>, Vec<Id>)> = BTreeMap::new();
+        for (id, ws) in self.store.list::<Workspace>().await {
+            let entry = out.entry(ws.name).or_default();
+            if entry.0.is_none() {
+                entry.0 = ws.path;
+            }
+            entry.1.push(id);
+        }
+        out
+    }
+
     /// Derived `blocked` (spec §8): some incoming `blocks` edge whose blocker
     /// task is not `done`.
     pub async fn is_blocked(&self, id: &Id) -> bool {

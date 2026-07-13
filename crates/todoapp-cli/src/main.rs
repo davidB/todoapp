@@ -83,7 +83,7 @@ async fn here_root<St: ComponentStore + TaskEntityStore>(
     svc: &Services<'_, St>,
 ) -> anyhow::Result<Id> {
     let cwd = std::env::current_dir().context("current dir")?;
-    svc.workspace_root_for(&cwd, &todoapp_tui::workspace_overrides())
+    svc.workspace_root_for(&cwd, &todoapp_config::workspace_overrides())
         .await
         .with_context(|| {
             format!(
@@ -378,18 +378,18 @@ async fn main() -> anyhow::Result<()> {
             DbCmd::Init => {
                 let path = cwd.join(".tda/tda.db");
                 // open_store creates the .tda dir and initializes the schema
-                todoapp_tui::open_store(Some(path.clone())).await?;
+                todoapp_config::open_store(Some(path.clone())).await?;
                 writeln!(io::stdout(), "{}", path.display())?;
             }
             DbCmd::Path => {
-                let path = todoapp_tui::resolve_db_path(&cwd, cli.db);
+                let path = todoapp_config::resolve_db_path(&cwd, cli.db);
                 writeln!(io::stdout(), "{}", path.display())?;
             }
         }
         return Ok(());
     }
 
-    let store = todoapp_tui::open_store(cli.db).await?;
+    let store = todoapp_config::open_store(cli.db).await?;
     let clock = SystemClock;
     let ids = UlidGen;
     let svc = make_svc(&store, &clock, &ids);
@@ -569,7 +569,7 @@ async fn main() -> anyhow::Result<()> {
                 breadcrumb: svc.breadcrumb(&id).await,
                 children,
                 blocked: svc.is_blocked(&id).await,
-                workspace: effective_workspace(&svc, &id, &todoapp_tui::workspace_overrides())
+                workspace: effective_workspace(&svc, &id, &todoapp_config::workspace_overrides())
                     .await,
                 task,
             };
@@ -578,7 +578,7 @@ async fn main() -> anyhow::Result<()> {
 
         Cmd::Context { id } => {
             let md = svc
-                .context_md(&Id::new(id), &todoapp_tui::workspace_overrides())
+                .context_md(&Id::new(id), &todoapp_config::workspace_overrides())
                 .await?;
             write!(io::stdout(), "{md}")?;
         }
@@ -797,7 +797,7 @@ async fn main() -> anyhow::Result<()> {
             }
             None => {
                 let cwd = std::env::current_dir().context("current dir")?;
-                let overrides = todoapp_tui::workspace_overrides();
+                let overrides = todoapp_config::workspace_overrides();
                 let root = svc.workspace_root_for(&cwd, &overrides).await;
                 match root {
                     Some(id) => {

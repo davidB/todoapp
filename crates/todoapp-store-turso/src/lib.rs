@@ -532,6 +532,28 @@ impl ComponentStore for TursoStore {
         let sql = format!("DELETE FROM {} WHERE task_id=?", ctable(C::NAME));
         self.conn.execute(&sql, (id.0.clone(),)).await.unwrap();
     }
+
+    async fn list<C: Component>(&self) -> Vec<(Id, C)> {
+        // ponytail: only json-blob components (Workspace) need enumeration
+        // today; extend per-table like `get`/`set` if another capability does.
+        let Some(table) = json_blob_table(C::NAME) else {
+            return Vec::new();
+        };
+        let mut rows = self
+            .conn
+            .query(&format!("SELECT task_id, data FROM {table}"), ())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        while let Some(r) = rows.next().await.unwrap() {
+            let tid = as_text(r.get_value(0).unwrap());
+            let data = as_text(r.get_value(1).unwrap());
+            if let Ok(c) = serde_json::from_str::<C>(&data) {
+                out.push((Id(tid), c));
+            }
+        }
+        out
+    }
 }
 
 #[async_trait(?Send)]

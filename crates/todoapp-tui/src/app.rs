@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use todoapp_app::{Anchor, QueryHit, Services};
 use todoapp_core::{
     Assignment, Clock, Date, Due, DueSpec, Duration, Filter, Id, IdGenerator, Query, Status,
-    TaskEntityStore, Timestamp, shortest_unique_prefixes,
+    TaskEntityStore, Timestamp, Workspace, shortest_unique_prefixes,
 };
 use todoapp_store_turso::TursoStore;
 use tui_input::{Input, InputRequest};
@@ -94,13 +94,14 @@ pub enum InputMode {
 
 /// Field labels for `TaskEditForm`, in `fields` order. `id` is shown for
 /// reference but not written back on save (see `submit_edit_form`).
-pub const EDIT_FORM_LABELS: [&str; 7] = [
+pub const EDIT_FORM_LABELS: [&str; 8] = [
     "title",
     "notes",
     "due (YYYY-MM-DD[ HH:MM])",
     "estimate (min)",
     "assignee",
     "tags",
+    "workspace",
     "id (read-only)",
 ];
 
@@ -112,8 +113,11 @@ pub const TITLE_FIELD: usize = 0;
 /// gets multi-line editing (Enter inserts a newline, Up/Down move the caret
 /// across wrapped rows) instead of single-line behavior.
 pub const NOTES_FIELD: usize = 1;
+/// Index of the read-only workspace display field in `TaskEditForm::fields`
+/// (own name, else dim `(inherited: X)` / `(none)`) — Enter opens the picker.
+pub const WORKSPACE_FIELD: usize = 6;
 /// Index of the read-only id field in `TaskEditForm::fields`.
-pub const ID_FIELD: usize = 6;
+pub const ID_FIELD: usize = 7;
 
 /// How long a status-bar toast message (yank confirmation, error, ...) stays
 /// visible before falling back to the keybinding hints, absent further input.
@@ -134,6 +138,15 @@ fn is_multiline_field(i: usize) -> bool {
     i == TITLE_FIELD || i == NOTES_FIELD
 }
 
+/// The workspace field's display text when the task carries no `Workspace`
+/// of its own: the nearest ancestor's name, or `(none)`.
+fn workspace_placeholder(inherited: Option<&str>) -> String {
+    match inherited {
+        Some(name) => format!("(inherited: {name})"),
+        None => "(none)".to_string(),
+    }
+}
+
 /// The multi-field task edit dialog (title/notes/due/estimate/assignee/tags/id),
 /// opened by `Action::EditTitle`. Separate from `InputMode`/`input` since
 /// those are single-line; this carries one buffer per field plus which one
@@ -141,8 +154,54 @@ fn is_multiline_field(i: usize) -> bool {
 #[derive(Clone)]
 pub struct TaskEditForm {
     pub id: Id,
-    pub fields: [Input; 7],
+    pub fields: [Input; 8],
     pub focus: usize,
+    /// Nearest ancestor's workspace name, for the `(inherited: X)` display
+    /// when the task carries none of its own. `None` = no ancestor workspace.
+    pub inherited: Option<String>,
+    /// Staged workspace change: `None` = untouched (own unchanged),
+    /// `Some(None)` = unassign, `Some(Some(w))` = assign `w`. Applied on save.
+    #[allow(clippy::option_option)]
+    pub workspace: Option<Option<Workspace>>,
+}
+
+/// One entry in the workspace-picker popup, with the action Enter performs.
+pub struct WsPickerItem {
+    pub label: String,
+    pub action: WsPickerAction,
+}
+
+pub enum WsPickerAction {
+    Assign(Workspace),
+    Unassign,
+    New,
+}
+
+/// The workspace-assignment popup opened from the edit form's workspace field.
+pub struct WsPicker {
+    pub items: Vec<WsPickerItem>,
+    pub selected: usize,
+}
+
+/// One row of the workspace editor dialog's `name | default path | override` table.
+pub struct WsRow {
+    pub name: String,
+    pub db_path: Option<String>,
+    pub override_: Option<String>,
+    pub is_new: bool,
+}
+
+/// The workspace management dialog (rename / change default path / set a
+/// per-machine override, or define a brand-new workspace).
+pub struct WsEditor {
+    pub rows: Vec<WsRow>,
+    /// `(row, col)`; col 0 = name, 1 = default path, 2 = override.
+    pub cursor: (usize, usize),
+    /// The cell currently being typed into, if any.
+    pub editing: Option<Input>,
+    /// Opened from the picker's "(new…)" entry: closing with a named new row
+    /// stages that workspace onto the edit form.
+    pub assign: bool,
 }
 
 // ---- AppState ---------------------------------------------------------------
@@ -165,6 +224,10 @@ pub struct AppState {
     pub confirm_delete: Option<(Id, bool)>,
     /// Active task edit form (title/notes/due/estimate/assignee), if open.
     pub edit_form: Option<TaskEditForm>,
+    /// Workspace-assignment popup, opened from the edit form's workspace field.
+    pub ws_picker: Option<WsPicker>,
+    /// Workspace management dialog, opened from the picker's "(new…)" entry.
+    pub ws_editor: Option<WsEditor>,
     /// Active char-range selection on the current row's title (Tree/List),
     /// while in select mode (entered via `Action::Select`).
     pub selection: Option<Selection>,
@@ -374,6 +437,8 @@ impl AppState {
             input: None,
             confirm_delete: None,
             edit_form: None,
+            ws_picker: None,
+            ws_editor: None,
             selection: None,
             status_msg: None,
             status_msg_expires_at: None,
@@ -487,6 +552,12 @@ impl AppState {
             return Ok(false);
         }
         let width = text_edit::dialog_wrap_width(term_width);
+        if self.ws_editor.is_some() {
+            return self.handle_ws_editor_key(code, modifiers).await;
+        }
+        if self.ws_picker.is_some() {
+            return self.handle_ws_picker_key(code).await;
+        }
         if self.edit_form.is_some() {
             return self.handle_edit_form_key(code, modifiers, width).await;
         }
@@ -602,6 +673,14 @@ impl AppState {
                             .get(&id)
                             .cloned()
                             .unwrap_or_else(|| id.to_string());
+                        let inherited = match svc.parent_of(&id).await {
+                            Some(parent) => svc.workspace_of(&parent).await.map(|w| w.name),
+                            None => None,
+                        };
+                        let workspace_display = match &snap.workspace {
+                            Some(w) => w.name.clone(),
+                            None => workspace_placeholder(inherited.as_deref()),
+                        };
                         self.edit_form = Some(TaskEditForm {
                             id,
                             fields: [
@@ -619,10 +698,13 @@ impl AppState {
                                     .unwrap_or_default(),
                                 assignee,
                                 tags,
+                                workspace_display,
                                 id_display,
                             ]
                             .map(Input::from),
                             focus: 0,
+                            inherited,
+                            workspace: None,
                         });
                     }
                 }
@@ -924,6 +1006,11 @@ impl AppState {
             {
                 form.fields[form.focus].handle(InputRequest::InsertChar('\n'));
             }
+            KeyCode::Enter
+                if form.focus == WORKSPACE_FIELD && !modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.open_ws_picker().await;
+            }
             KeyCode::Enter => {
                 if let Some(form) = self.edit_form.take() {
                     self.submit_edit_form(form).await?;
@@ -954,7 +1041,9 @@ impl AppState {
                 form.fields[form.focus].handle(InputRequest::GoToEnd);
             }
             KeyCode::Char('v')
-                if modifiers.contains(KeyModifiers::CONTROL) && form.focus != ID_FIELD =>
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    && form.focus != ID_FIELD
+                    && form.focus != WORKSPACE_FIELD =>
             {
                 match self.clipboard.get_text() {
                     Ok(text) => {
@@ -965,7 +1054,7 @@ impl AppState {
                     Err(e) => self.set_status(format!("paste: {e}")),
                 }
             }
-            _ if form.focus == ID_FIELD => {} // read-only, ignore all other edit keys
+            _ if form.focus == ID_FIELD || form.focus == WORKSPACE_FIELD => {} // read-only
             _ => {
                 if let Some(req) = text_edit_request(code, modifiers) {
                     form.fields[form.focus].handle(req);
@@ -976,7 +1065,7 @@ impl AppState {
     }
 
     async fn submit_edit_form(&mut self, form: TaskEditForm) -> anyhow::Result<()> {
-        let [title, notes, due, estimate, assignee, tags, _id] =
+        let [title, notes, due, estimate, assignee, tags, _workspace, _id] =
             form.fields.clone().map(String::from);
         let title = title.trim().to_string();
         if title.is_empty() {
@@ -1047,6 +1136,12 @@ impl AppState {
         }
         for tag in to_remove_tags {
             let _ = svc.remove_tag(&form.id, tag).await;
+        }
+        if let Some(ws) = form.workspace.clone() {
+            let unchanged = matches!(&snap, Ok(snap) if snap.workspace == ws);
+            if !unchanged {
+                let _ = svc.set_workspace(&form.id, ws).await;
+            }
         }
         if let Err(e) = result {
             self.set_status(format!("edit: {e}"));
@@ -1219,6 +1314,235 @@ impl AppState {
             Some(Err(e)) => self.set_status(format!("reparent: {e}")),
         }
         Ok(())
+    }
+
+    /// Opens the workspace-assignment popup on the edit form's workspace
+    /// field: every known workspace, then the inherited/none entry (same
+    /// action either way — unassign), then "(new…)".
+    async fn open_ws_picker(&mut self) {
+        let Some(form) = &self.edit_form else {
+            return;
+        };
+        let svc = make_svc(&self.store, &self.clock, &self.ids);
+        let workspaces = svc.workspaces().await;
+        let mut items: Vec<WsPickerItem> = workspaces
+            .into_iter()
+            .map(|(name, (path, _ids))| {
+                let label = match &path {
+                    Some(p) => format!("{name} ({p})"),
+                    None => name.clone(),
+                };
+                WsPickerItem {
+                    label,
+                    action: WsPickerAction::Assign(Workspace { name, path }),
+                }
+            })
+            .collect();
+        items.push(WsPickerItem {
+            label: workspace_placeholder(form.inherited.as_deref()),
+            action: WsPickerAction::Unassign,
+        });
+        items.push(WsPickerItem {
+            label: "(new…)".to_string(),
+            action: WsPickerAction::New,
+        });
+        self.ws_picker = Some(WsPicker { items, selected: 0 });
+    }
+
+    /// Stages a workspace change on the open edit form (no store write until
+    /// save) and updates the field's display text to match.
+    fn stage_workspace(&mut self, ws: Option<Workspace>) {
+        let Some(form) = &mut self.edit_form else {
+            return;
+        };
+        let text = match &ws {
+            Some(w) => w.name.clone(),
+            None => workspace_placeholder(form.inherited.as_deref()),
+        };
+        form.fields[WORKSPACE_FIELD] = Input::from(text);
+        form.workspace = Some(ws);
+    }
+
+    async fn handle_ws_picker_key(&mut self, code: KeyCode) -> anyhow::Result<bool> {
+        let Some(picker) = &mut self.ws_picker else {
+            return Ok(true);
+        };
+        match code {
+            KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
+            KeyCode::Down => {
+                picker.selected = (picker.selected + 1).min(picker.items.len().saturating_sub(1));
+            }
+            KeyCode::Esc => self.ws_picker = None,
+            KeyCode::Enter => {
+                if let Some(picker) = self.ws_picker.take()
+                    && let Some(item) = picker.items.into_iter().nth(picker.selected)
+                {
+                    match item.action {
+                        WsPickerAction::Assign(ws) => self.stage_workspace(Some(ws)),
+                        WsPickerAction::Unassign => self.stage_workspace(None),
+                        WsPickerAction::New => self.open_ws_editor(true).await,
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    /// Opens the workspace editor: one row per known workspace (name/default
+    /// path/config override) plus a fresh row focused on its name cell.
+    async fn open_ws_editor(&mut self, assign: bool) {
+        let overrides = todoapp_config::workspace_overrides();
+        let svc = make_svc(&self.store, &self.clock, &self.ids);
+        let mut rows: Vec<WsRow> = svc
+            .workspaces()
+            .await
+            .into_iter()
+            .map(|(name, (path, _ids))| {
+                let cfg_override = overrides.get(&name).cloned();
+                WsRow {
+                    name,
+                    db_path: path,
+                    override_: cfg_override,
+                    is_new: false,
+                }
+            })
+            .collect();
+        rows.push(WsRow {
+            name: String::new(),
+            db_path: None,
+            override_: None,
+            is_new: true,
+        });
+        let new_row = rows.len() - 1;
+        self.ws_editor = Some(WsEditor {
+            rows,
+            cursor: (new_row, 0),
+            editing: Some(Input::default()),
+            assign,
+        });
+    }
+
+    async fn handle_ws_editor_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> anyhow::Result<bool> {
+        let Some(mut editor) = self.ws_editor.take() else {
+            return Ok(true);
+        };
+        match code {
+            KeyCode::Up if editor.editing.is_none() => {
+                editor.cursor.0 = editor.cursor.0.saturating_sub(1);
+            }
+            KeyCode::Down if editor.editing.is_none() => {
+                editor.cursor.0 = (editor.cursor.0 + 1).min(editor.rows.len().saturating_sub(1));
+            }
+            KeyCode::Left if editor.editing.is_none() => {
+                editor.cursor.1 = editor.cursor.1.saturating_sub(1);
+            }
+            KeyCode::Right if editor.editing.is_none() => {
+                editor.cursor.1 = (editor.cursor.1 + 1).min(2);
+            }
+            KeyCode::Enter if editor.editing.is_none() => {
+                let (r, c) = editor.cursor;
+                let current = match (c, editor.rows.get(r)) {
+                    (0, Some(row)) => row.name.clone(),
+                    (1, Some(row)) => row.db_path.clone().unwrap_or_default(),
+                    (_, Some(row)) => row.override_.clone().unwrap_or_default(),
+                    (_, None) => String::new(),
+                };
+                editor.editing = Some(Input::from(current));
+            }
+            KeyCode::Enter => {
+                if let Some(input) = editor.editing.take() {
+                    self.commit_ws_cell(&mut editor, input.value().to_string())
+                        .await;
+                }
+            }
+            KeyCode::Esc if editor.editing.is_some() => {
+                editor.editing = None;
+            }
+            KeyCode::Esc => {
+                if editor.assign
+                    && let Some(new_row) = editor.rows.iter().find(|r| r.is_new)
+                    && !new_row.name.trim().is_empty()
+                {
+                    let ws = Workspace {
+                        name: new_row.name.trim().to_string(),
+                        path: new_row.db_path.clone(),
+                    };
+                    self.stage_workspace(Some(ws));
+                }
+                self.rebuild().await;
+                return Ok(true);
+            }
+            _ => {
+                if let Some(input) = &mut editor.editing
+                    && let Some(req) = text_edit_request(code, modifiers)
+                {
+                    input.handle(req);
+                }
+            }
+        }
+        self.ws_editor = Some(editor);
+        Ok(true)
+    }
+
+    /// Commits the cell currently being edited: persists the change for an
+    /// existing row (rename/path/override), or just updates the in-memory
+    /// row for the not-yet-assigned new row.
+    async fn commit_ws_cell(&mut self, editor: &mut WsEditor, value: String) {
+        let (r, c) = editor.cursor;
+        let Some(row) = editor.rows.get(r) else {
+            return;
+        };
+        let is_new = row.is_new;
+        match c {
+            0 => {
+                let old_name = row.name.clone();
+                let new_name = value.trim().to_string();
+                if is_new {
+                    editor.rows[r].name = new_name;
+                } else if !new_name.is_empty() && new_name != old_name {
+                    let ws = Workspace {
+                        name: new_name.clone(),
+                        path: row.db_path.clone(),
+                    };
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    let _ = svc.update_workspace(&old_name, ws).await;
+                    if let Some(over) = row.override_.clone() {
+                        let _ = todoapp_config::set_workspace_override(&old_name, None);
+                        let _ = todoapp_config::set_workspace_override(&new_name, Some(&over));
+                    }
+                    editor.rows[r].name = new_name;
+                }
+            }
+            1 => {
+                let new_path = (!value.trim().is_empty()).then(|| value.trim().to_string());
+                if is_new {
+                    editor.rows[r].db_path = new_path;
+                } else {
+                    let ws = Workspace {
+                        name: row.name.clone(),
+                        path: new_path.clone(),
+                    };
+                    let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    let _ = svc.update_workspace(&row.name.clone(), ws).await;
+                    editor.rows[r].db_path = new_path;
+                }
+            }
+            _ => {
+                let new_override = (!value.trim().is_empty()).then(|| value.trim().to_string());
+                if !row.name.is_empty() {
+                    let _ = todoapp_config::set_workspace_override(
+                        &row.name.clone(),
+                        new_override.as_deref(),
+                    );
+                }
+                editor.rows[r].override_ = new_override;
+            }
+        }
     }
 }
 
@@ -1767,5 +2091,248 @@ pub(crate) mod tests {
         let (assign, unassign) = diff_assignees(&current, "me");
         assert!(assign.is_empty());
         assert_eq!(unassign, vec![Id::new("alice")]);
+    }
+
+    /// Tabs the open edit form forward to the workspace field.
+    async fn tab_to_workspace_field(app: &mut AppState) {
+        for _ in 0..WORKSPACE_FIELD {
+            app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.edit_form.as_ref().unwrap().focus, WORKSPACE_FIELD);
+    }
+
+    #[tokio::test]
+    async fn workspace_picker_assigns_existing_workspace() {
+        let (mut app, task_id) = new_app_with_task().await;
+        let ws = Workspace {
+            name: "proj".into(),
+            path: Some("/x".into()),
+        };
+        {
+            let other = {
+                let svc = make_svc(&app.store, &app.clock, &app.ids);
+                svc.create("Proj", None, Status::Todo, []).await.unwrap().id
+            };
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.set_workspace(&other, Some(ws.clone())).await.unwrap();
+        }
+
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        tab_to_workspace_field(&mut app).await;
+
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.ws_picker.is_some());
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.ws_picker.is_none());
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[WORKSPACE_FIELD].value(),
+            "proj"
+        );
+
+        let snap = save_edit_form(&mut app, &task_id).await;
+        assert_eq!(snap.workspace, Some(ws));
+    }
+
+    #[tokio::test]
+    async fn workspace_picker_inherited_or_none_stages_unassign() {
+        let mut app = new_app().await;
+        let (root_id, child_id) = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            let root = svc.create("Root", None, Status::Todo, []).await.unwrap();
+            let ws = Workspace {
+                name: "root-ws".into(),
+                path: None,
+            };
+            svc.set_workspace(&root.id, Some(ws)).await.unwrap();
+            let child = svc
+                .create("Child", Some(&root.id), Status::Todo, [])
+                .await
+                .unwrap();
+            (root.id, child.id)
+        };
+        app.expanded.insert(root_id);
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == child_id).unwrap();
+
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[WORKSPACE_FIELD].value(),
+            "(inherited: root-ws)"
+        );
+        tab_to_workspace_field(&mut app).await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // open picker: [root-ws, inherited/none, new…]
+        app.handle_event(press(KeyCode::Down, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // select inherited/none
+
+        let snap = save_edit_form(&mut app, &child_id).await;
+        assert_eq!(snap.workspace, None);
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        assert_eq!(
+            svc.workspace_of(&child_id).await.map(|w| w.name),
+            Some("root-ws".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_new_via_editor_stages_and_saves() {
+        let (mut app, task_id) = new_app_with_task().await;
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        tab_to_workspace_field(&mut app).await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // open picker: [inherited/none, new…]
+        app.handle_event(press(KeyCode::Down, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // select "(new…)"
+        {
+            let editor = app.ws_editor.as_ref().unwrap();
+            assert_eq!(editor.cursor, (0, 0));
+            assert!(editor.editing.is_some());
+        }
+        type_str(&mut app, "newproj").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // commit name
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // close editor -> stages onto the edit form
+        assert!(app.ws_editor.is_none());
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[WORKSPACE_FIELD].value(),
+            "newproj"
+        );
+
+        let snap = save_edit_form(&mut app, &task_id).await;
+        assert_eq!(snap.workspace.map(|w| w.name), Some("newproj".to_string()));
+    }
+
+    #[tokio::test]
+    async fn workspace_esc_from_form_discards_staged_change() {
+        let (mut app, task_id) = new_app_with_task().await;
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        tab_to_workspace_field(&mut app).await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Down, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // select "(new…)"
+        type_str(&mut app, "abandoned").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // close editor, stages "abandoned"
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[WORKSPACE_FIELD].value(),
+            "abandoned"
+        );
+
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // Esc from form: cancel everything
+        assert!(app.edit_form.is_none());
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        let snap = svc.snapshot(&task_id).await.unwrap();
+        assert_eq!(snap.workspace, None);
+    }
+
+    #[tokio::test]
+    async fn workspace_editor_rename_propagates_to_all_carriers() {
+        let mut app = new_app().await;
+        let (id_a, id_b) = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            let a = svc.create("A", None, Status::Todo, []).await.unwrap();
+            let b = svc.create("B", None, Status::Todo, []).await.unwrap();
+            let ws = Workspace {
+                name: "old".into(),
+                path: Some("/p".into()),
+            };
+            svc.set_workspace(&a.id, Some(ws.clone())).await.unwrap();
+            svc.set_workspace(&b.id, Some(ws)).await.unwrap();
+            (a.id, b.id)
+        };
+        app.rebuild().await;
+        app.cursor = app.items.iter().position(|i| i.id == id_a).unwrap();
+
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        tab_to_workspace_field(&mut app).await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // open picker: [old, inherited/none, new…]
+        app.handle_event(press(KeyCode::Down, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Down, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // select "(new…)": editor opens, new row's name cell mid-edit
+
+        // Cancel that cell's edit so arrows can navigate to the existing row.
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Up, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // start editing "old"'s name cell
+        for _ in 0.."old".len() {
+            app.handle_event(press(KeyCode::Backspace, KeyModifiers::NONE), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        type_str(&mut app, "renamed").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // commit rename
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // close editor (new row still unnamed -> nothing staged)
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        let snap_b = svc.snapshot(&id_b).await.unwrap();
+        assert_eq!(
+            snap_b.workspace.map(|w| w.name),
+            Some("renamed".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_field_is_read_only_except_via_picker() {
+        let (mut app, _task_id) = new_app_with_task().await;
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        tab_to_workspace_field(&mut app).await;
+        let before = app.edit_form.as_ref().unwrap().fields[WORKSPACE_FIELD]
+            .value()
+            .to_string();
+        type_str(&mut app, "xyz").await;
+        assert_eq!(
+            app.edit_form.as_ref().unwrap().fields[WORKSPACE_FIELD].value(),
+            before
+        );
     }
 }

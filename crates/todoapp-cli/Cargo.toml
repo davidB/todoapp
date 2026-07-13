@@ -19,6 +19,7 @@ dist = true
 todoapp-core = { workspace = true }
 todoapp-app = { workspace = true }
 todoapp-tui = { workspace = true }
+todoapp-config = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 jiff = { workspace = true }

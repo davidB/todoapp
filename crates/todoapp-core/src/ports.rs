@@ -52,6 +52,8 @@ pub trait ComponentStore {
     async fn set<C: Component>(&self, id: &Id, value: C);
     /// Detach the task's `C` component (absent ⇒ no-op).
     async fn remove<C: Component>(&self, id: &Id);
+    /// All tasks carrying `C`, with the component. Presence is the capability.
+    async fn list<C: Component>(&self) -> Vec<(Id, C)>;
 }
 
 /// The minimal `task` entity (spec §7): identity + timestamps only. Everything

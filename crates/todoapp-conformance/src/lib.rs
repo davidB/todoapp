@@ -570,6 +570,27 @@ macro_rules! conformance_suite {
             }
 
             #[tokio::test]
+            async fn list_enumerates_every_carrier_of_a_component() {
+                use ::todoapp_core::{ComponentStore, Workspace};
+                svc!(store, clock, ids);
+                let s = services!(store, clock, ids);
+                let a = s.create("A", None, Status::Todo, []).await.unwrap();
+                let b = s.create("B", None, Status::Todo, []).await.unwrap();
+                let ws = Workspace {
+                    name: "proj".into(),
+                    path: Some("/stored/proj".into()),
+                };
+                s.store.set(&a.id, ws.clone()).await;
+                s.store.set(&b.id, ws.clone()).await;
+
+                let mut listed = s.store.list::<Workspace>().await;
+                listed.sort_by(|x, y| x.0.0.cmp(&y.0.0));
+                let mut expected = vec![(a.id.clone(), ws.clone()), (b.id.clone(), ws.clone())];
+                expected.sort_by(|x, y| x.0.0.cmp(&y.0.0));
+                assert_eq!(listed, expected);
+            }
+
+            #[tokio::test]
             async fn claimable_for_hides_foreign_assigned_and_blocked() {
                 svc!(store, clock, ids);
                 let s = services!(store, clock, ids);

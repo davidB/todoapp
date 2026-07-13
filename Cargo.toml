@@ -16,6 +16,7 @@ todoapp-app = { version = "0.3.0", path = "crates/todoapp-app" }
 todoapp-store-mem = { path = "crates/todoapp-store-mem" }
 todoapp-store-turso = { version = "0.3.0", path = "crates/todoapp-store-turso" }
 todoapp-conformance = { path = "crates/todoapp-conformance" }
+todoapp-config = { version = "0.3.0", path = "crates/todoapp-config" }
 todoapp-tui = { version = "0.3.0", path = "crates/todoapp-tui" }
 # Turso: the async embedded SQLite-compatible engine (spec §6). Beta. Adapter-only.
 turso = "0.7.0-pre.10"
@@ -40,6 +41,7 @@ dirs = "6"
 ratatui = "0.30"
 tui-input = { version = "0.15", default-features = false }
 toml = "1"
+toml_edit = "0.23"
 ulid = "1"
 # wayland-data-control: without it, arboard only reaches X11/XWayland — on a
 # pure-Wayland session (no XWayland) `set_text` can return `Ok` without the

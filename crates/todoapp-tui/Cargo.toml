@@ -10,10 +10,10 @@ description = "Keyboard-first TUI for tda (M4)"
 todoapp-core = { workspace = true }
 todoapp-app = { workspace = true }
 todoapp-store-turso = { workspace = true }
+todoapp-config = { workspace = true }
 anyhow = { workspace = true }
 jiff = { workspace = true }
 crossterm = { workspace = true }
-dirs = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 throbber-widgets-tui = { version = "0.11", default-features = false }
@@ -24,9 +24,6 @@ toml = { workspace = true }
 ulid = { workspace = true }
 arboard = { workspace = true }
 base64 = { workspace = true }
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true
