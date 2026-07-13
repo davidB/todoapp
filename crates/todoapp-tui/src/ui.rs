@@ -638,13 +638,32 @@ fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::app::TaskEditForm) 
     }
 }
 
+/// Title syntax hints (spec `FR-32`/`FR-33`/`FR-34`), appended to the
+/// keybinding table since they aren't `Action`s — shown as `(shown text, description)`.
+const TITLE_SYNTAX_HINTS: &[(&str, &str)] = &[
+    ("", ""),
+    ("title syntax:", ""),
+    ("@name", "assign"),
+    ("#tag", "add tag"),
+    ("[date]", "set due (YYYY-MM-DD, HH:mm, weekday, ...)"),
+    (
+        "[recurrence]",
+        "set recurrence (daily, every N days, monthly, ...)",
+    ),
+];
+
 fn render_help(f: &mut Frame, area: Rect, keymap: &Keymap) {
-    let rows: Vec<Row> = Action::iter()
+    let mut rows: Vec<Row> = Action::iter()
         .map(|action| {
             let keys = keymap.keys_for(action).join(" / ");
             Row::new([keys, action.description().to_string()])
         })
         .collect();
+    rows.extend(
+        TITLE_SYNTAX_HINTS
+            .iter()
+            .map(|(k, d)| Row::new([(*k).to_string(), (*d).to_string()])),
+    );
 
     let popup = centered_rect(area, 62, u16::try_from(rows.len() + 2).unwrap_or(u16::MAX));
     let table = Table::new(rows, [Constraint::Length(20), Constraint::Fill(1)])
@@ -740,6 +759,29 @@ mod tests {
             has_red_cell,
             "expected a red-styled eta cell for the overrun"
         );
+    }
+
+    #[tokio::test]
+    async fn help_popup_documents_title_syntax() {
+        let mut app = new_test_app().await;
+        app.view = crate::app::View::Help;
+
+        // Tall enough to fit every keybinding row plus the title-syntax hints
+        // appended after them (the popup's height is capped to the terminal's).
+        let backend = TestBackend::new(130, 60);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(f, &app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let rendered = buf
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+
+        assert!(rendered.contains("@name"));
+        assert!(rendered.contains("#tag"));
+        assert!(rendered.contains("[date]"));
+        assert!(rendered.contains("[recurrence]"));
     }
 
     #[tokio::test]

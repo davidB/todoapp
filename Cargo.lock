@@ -3819,6 +3819,7 @@ dependencies = [
  "async-trait",
  "derive_more",
  "jiff",
+ "rstest",
  "serde",
  "serde_json",
 ]

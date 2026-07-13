@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use todoapp_app::{Anchor, QueryHit, Services};
 use todoapp_core::{
-    Assignment, Clock, Date, Due, Duration, Filter, Id, IdGenerator, Query, Status,
+    Assignment, Clock, Date, Due, DueSpec, Duration, Filter, Id, IdGenerator, Query, Status,
     TaskEntityStore, Timestamp, shortest_unique_prefixes,
 };
 use todoapp_store_turso::TursoStore;
@@ -988,8 +988,8 @@ impl AppState {
         let due = if due.is_empty() {
             None
         } else {
-            match Due::parse(due) {
-                Ok(d) => Some(d),
+            match DueSpec::parse(due) {
+                Ok(spec) => Some(spec.resolve(self.clock.today())),
                 Err(e) => {
                     self.set_status(format!("edit: due date: {e}"));
                     self.edit_form = Some(form);

@@ -28,6 +28,7 @@ derive_more = { version = "2", features = ["display", "error", "from"] }
 async-trait = "0.1"
 insta = { version = "1", features = ["json"] }
 proptest = "1"
+rstest = "0.26"
 # tokio is a runtime (I/O): test-only in todoapp-app; never a todoapp-core/todoapp-app normal dep.
 tokio = { version = "1", features = ["rt", "macros"] }
 # TUI binary deps (todoapp-tui)

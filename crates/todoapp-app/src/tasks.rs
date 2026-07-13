@@ -40,10 +40,17 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         // root is just another `child` edge and `roots()` is a plain port query.
         let root = Id::root();
         self.attach(&id, parent.unwrap_or(&root), None).await?;
-        // `@name`/`#tag` title syntax (spec FR-32/FR-33): additive, idempotent
-        // (Assign is a no-op if already assigned).
+        // `@name`/`#tag`/`[...]` title syntax (spec FR-32/FR-33/FR-34):
+        // additive, idempotent (Assign is a no-op if already assigned).
         for actor in extracted.mentions {
             self.assign(&id, actor).await?;
+        }
+        if let Some(due) = extracted.due {
+            self.set_due(&id, Some(due.resolve(self.clock.today())))
+                .await?;
+        }
+        if let Some(recurrence) = extracted.recurrence {
+            self.set_recurrence(&id, Some(recurrence)).await?;
         }
         self.snapshot(&id).await
     }
@@ -80,7 +87,11 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
     ) -> Result<TaskSnapshot, Error> {
         let extracted = extract_title_syntax(&title.into());
         let snap = self.run(id, Command::SetTitle(extracted.title)).await?;
-        if extracted.mentions.is_empty() && extracted.tags.is_empty() {
+        if extracted.mentions.is_empty()
+            && extracted.tags.is_empty()
+            && extracted.due.is_none()
+            && extracted.recurrence.is_none()
+        {
             return Ok(snap);
         }
         for actor in extracted.mentions {
@@ -88,6 +99,13 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         }
         for tag in extracted.tags {
             self.add_tag(id, tag).await?;
+        }
+        if let Some(due) = extracted.due {
+            self.set_due(id, Some(due.resolve(self.clock.today())))
+                .await?;
+        }
+        if let Some(recurrence) = extracted.recurrence {
+            self.set_recurrence(id, Some(recurrence)).await?;
         }
         self.snapshot(id).await
     }

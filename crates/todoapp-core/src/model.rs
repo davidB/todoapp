@@ -281,6 +281,22 @@ impl Weekday {
             _ => Weekday::Sun,
         }
     }
+
+    /// A weekday name, case-insensitive: `mon`..`sun` or `monday`..`sunday`.
+    /// Shared by `[...]` title syntax and any other free-text due-date input
+    /// (TUI edit form, CLI `--due`).
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "mon" | "monday" => Weekday::Mon,
+            "tue" | "tuesday" => Weekday::Tue,
+            "wed" | "wednesday" => Weekday::Wed,
+            "thu" | "thursday" => Weekday::Thu,
+            "fri" | "friday" => Weekday::Fri,
+            "sat" | "saturday" => Weekday::Sat,
+            "sun" | "sunday" => Weekday::Sun,
+            _ => return None,
+        })
+    }
 }
 
 /// A recurrence rule (spec §3): how often a [`Recurrence`]-carrying task's due
@@ -311,6 +327,52 @@ impl Component for Recurrence {
 }
 
 impl Recurrence {
+    /// A minimal todoist/org-mode-style recurrence expression, mapped onto
+    /// [`RepeatCycle`]'s daily-interval/weekly-weekday-set/monthly-interval
+    /// cases — not a full RRULE engine:
+    /// `daily` | `every day` | `every N days`
+    /// `weekly` | `every week` | `every <weekday>[,<weekday>...]`
+    /// `monthly` | `every month` | `every N months`
+    ///
+    /// Shared by `[...]` title syntax, the CLI `--recurrence` flag, and any
+    /// other free-text recurrence input.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let lower = s.trim().to_ascii_lowercase();
+        let rest = lower.strip_prefix("every").map(str::trim).unwrap_or(&lower);
+        let invalid = || format!("unrecognized recurrence expression {s:?}");
+        let cycle = match rest {
+            "day" if lower.starts_with("every") => RepeatCycle::Daily { every_n_days: 1 },
+            "daily" => RepeatCycle::Daily { every_n_days: 1 },
+            "week" if lower.starts_with("every") => RepeatCycle::Weekly {
+                weekdays: BTreeSet::new(),
+            },
+            "weekly" => RepeatCycle::Weekly {
+                weekdays: BTreeSet::new(),
+            },
+            "month" if lower.starts_with("every") => RepeatCycle::Monthly { every_n_months: 1 },
+            "monthly" => RepeatCycle::Monthly { every_n_months: 1 },
+            _ if lower.starts_with("every") => {
+                if let Some(n_days) = rest.strip_suffix("days").map(str::trim_end) {
+                    RepeatCycle::Daily {
+                        every_n_days: n_days.parse().map_err(|_| invalid())?,
+                    }
+                } else if let Some(n_months) = rest.strip_suffix("months").map(str::trim_end) {
+                    RepeatCycle::Monthly {
+                        every_n_months: n_months.parse().map_err(|_| invalid())?,
+                    }
+                } else {
+                    let weekdays: Option<BTreeSet<Weekday>> =
+                        rest.split(',').map(|w| Weekday::parse(w.trim())).collect();
+                    RepeatCycle::Weekly {
+                        weekdays: weekdays.ok_or_else(invalid)?,
+                    }
+                }
+            }
+            _ => return Err(invalid()),
+        };
+        Ok(Recurrence { cycle, time: None })
+    }
+
     /// The next due date/time after `current`, per this rule.
     pub fn next_due(&self, current: Due) -> Due {
         let date = match &self.cycle {
@@ -352,6 +414,53 @@ fn next_weekday(from: Date, weekdays: &BTreeSet<Weekday>) -> Date {
         }
     }
     from
+}
+
+/// An unresolved due-date value parsed from `[...]` title syntax (`FR-34`):
+/// pure and reference-date-agnostic, since `todoapp-core` has no `Clock`
+/// access (spec §5). [`DueSpec::resolve`] turns it into a concrete [`Due`]
+/// once a caller (`todoapp-app`, which holds a `Clock`) supplies "today".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DueSpec {
+    Absolute(Due),
+    TimeOnly(Time),
+    /// Next occurrence of this weekday, strictly after `today`.
+    Weekday(Weekday),
+}
+
+impl DueSpec {
+    /// Accepts anything [`Due::parse`] does (`YYYY-MM-DD[ HH:MM]`), a bare
+    /// `HH:MM` time, or a weekday name — the same relaxed grammar `[...]`
+    /// title syntax uses, shared with any other free-text due-date input
+    /// (TUI edit form, CLI `--due`).
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if let Ok(due) = Due::parse(s) {
+            return Ok(DueSpec::Absolute(due));
+        }
+        if let Ok(time) = Time::parse(s) {
+            return Ok(DueSpec::TimeOnly(time));
+        }
+        Weekday::parse(s).map(DueSpec::Weekday).ok_or_else(|| {
+            format!(
+                "expected a date (YYYY-MM-DD[ HH:MM]), a time (HH:MM), or a weekday name, got {s:?}"
+            )
+        })
+    }
+
+    pub fn resolve(&self, today: Date) -> Due {
+        match self {
+            DueSpec::Absolute(due) => *due,
+            DueSpec::TimeOnly(time) => Due {
+                date: today,
+                time: Some(*time),
+            },
+            DueSpec::Weekday(weekday) => Due {
+                date: next_weekday(today, &BTreeSet::from([*weekday])),
+                time: None,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -465,10 +574,44 @@ pub struct SortKey {
 
 #[cfg(test)]
 mod recurrence_tests {
+    use rstest::rstest;
+
     use super::*;
 
     fn due(s: &str) -> Due {
         Due::parse(s).unwrap()
+    }
+
+    #[rstest]
+    #[case("daily", RepeatCycle::Daily { every_n_days: 1 })]
+    #[case("every day", RepeatCycle::Daily { every_n_days: 1 })]
+    #[case("every 3 days", RepeatCycle::Daily { every_n_days: 3 })]
+    #[case("weekly", RepeatCycle::Weekly { weekdays: BTreeSet::new() })]
+    #[case("every week", RepeatCycle::Weekly { weekdays: BTreeSet::new() })]
+    #[case(
+        "every mon,wed,fri",
+        RepeatCycle::Weekly { weekdays: BTreeSet::from([Weekday::Mon, Weekday::Wed, Weekday::Fri]) }
+    )]
+    #[case("monthly", RepeatCycle::Monthly { every_n_months: 1 })]
+    #[case("every month", RepeatCycle::Monthly { every_n_months: 1 })]
+    #[case("every 2 months", RepeatCycle::Monthly { every_n_months: 2 })]
+    fn parse_accepts_every_grammar_form(#[case] input: &str, #[case] expected_cycle: RepeatCycle) {
+        assert_eq!(
+            Recurrence::parse(input),
+            Ok(Recurrence {
+                cycle: expected_cycle,
+                time: None
+            })
+        );
+    }
+
+    #[rstest]
+    #[case("every")]
+    #[case("every fortnight")]
+    #[case("every mon,someday")]
+    #[case("hourly")]
+    fn parse_rejects_invalid_expressions(#[case] input: &str) {
+        assert!(Recurrence::parse(input).is_err());
     }
 
     #[test]
@@ -509,5 +652,63 @@ mod recurrence_tests {
         };
         let next = rec.next_due(due("2026-07-01 18:00"));
         assert_eq!(next.time, Some(Time::parse("09:00").unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod due_spec_tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    fn date(s: &str) -> Date {
+        Date::parse(s).unwrap()
+    }
+
+    #[test]
+    fn absolute_passes_through_unchanged() {
+        let due = Due::parse("2026-08-01 09:00").unwrap();
+        assert_eq!(DueSpec::Absolute(due).resolve(date("2026-07-01")), due);
+    }
+
+    #[test]
+    fn time_only_resolves_against_today() {
+        let time = Time::parse("14:30").unwrap();
+        let resolved = DueSpec::TimeOnly(time).resolve(date("2026-07-01"));
+        assert_eq!(resolved.date, date("2026-07-01"));
+        assert_eq!(resolved.time, Some(time));
+    }
+
+    // 2026-07-01 is a Wednesday.
+    #[rstest]
+    #[case("2026-07-01", Weekday::Wed, "2026-07-08")] // today is Wed -> next Wed, a week out
+    #[case("2026-07-01", Weekday::Fri, "2026-07-03")] // later this week
+    #[case("2026-07-01", Weekday::Mon, "2026-07-06")] // earlier in the week -> wraps
+    fn weekday_resolves_to_next_occurrence_strictly_after_today(
+        #[case] today: &str,
+        #[case] weekday: Weekday,
+        #[case] expected: &str,
+    ) {
+        let resolved = DueSpec::Weekday(weekday).resolve(date(today));
+        assert_eq!(resolved.date, date(expected));
+        assert_eq!(resolved.time, None);
+    }
+
+    #[rstest]
+    #[case("2026-07-20", DueSpec::Absolute(Due::parse("2026-07-20").unwrap()))]
+    #[case(
+        "2026-07-20 09:00",
+        DueSpec::Absolute(Due::parse("2026-07-20 09:00").unwrap())
+    )]
+    #[case("09:00", DueSpec::TimeOnly(Time::parse("09:00").unwrap()))]
+    #[case("fri", DueSpec::Weekday(Weekday::Fri))]
+    #[case("Friday", DueSpec::Weekday(Weekday::Fri))]
+    fn parse_accepts_every_grammar_form(#[case] input: &str, #[case] expected: DueSpec) {
+        assert_eq!(DueSpec::parse(input), Ok(expected));
+    }
+
+    #[test]
+    fn parse_rejects_nonsense() {
+        assert!(DueSpec::parse("not a date").is_err());
     }
 }

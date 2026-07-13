@@ -44,9 +44,10 @@ The full design rationale lives in [`tda-spec.md`](tda-spec.md).
   `IssueRef`, `Attachments`, `TimeLog`.
 - Claim/delegate: a `todo` task can be claimed by anyone (or only its
   assignee, if one is set), handing off with full parent context.
-- `@name`/`#tag` title syntax: typing `fix @alice bug #urgent` in a title
-  auto-assigns `alice` and tags `urgent` — no separate step, works from CLI,
-  TUI, or import.
+- `@name`/`#tag`/`[...]` title syntax: typing `fix @alice bug #urgent` in a
+  title auto-assigns `alice` and tags `urgent`; `Ship it [2026-07-20]` or
+  `Standup [09:00] [mon,tue,wed,thu,fri]` sets a due date/time or recurrence —
+  no separate step, works from CLI, TUI, or import.
 - Aggregation up the tree: subtree progress %, summed estimate/time-spent,
   earliest due date — each capability defines its own roll-up.
 - Markdown and JSON import/export of any list or branch.

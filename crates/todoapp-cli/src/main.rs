@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use todoapp_app::{Anchor, Services, TaskSnapshot};
 use todoapp_core::{
-    ComponentStore, Dir, Due, DueFilter, Filter, Id, Query, SortField, SortKey, Status,
-    TaskEntityStore,
+    Clock, ComponentStore, Dir, DueFilter, DueSpec, Filter, Id, Query, Recurrence, SortField,
+    SortKey, Status, TaskEntityStore,
 };
 use todoapp_tui::{SystemClock, UlidGen, make_svc};
 
@@ -189,9 +189,14 @@ enum Cmd {
         notes: Option<String>,
         #[arg(long)]
         status: Option<StatusArg>,
-        /// Due date as YYYY-MM-DD, or "none" to clear.
+        /// Due date: YYYY-MM-DD, "YYYY-MM-DD HH:MM", HH:MM, a weekday name
+        /// (next occurrence), or "none" to clear.
         #[arg(long)]
         due: Option<String>,
+        /// Recurrence: "daily", "every N days", "every mon,wed,fri",
+        /// "monthly", "every N months", or "none" to clear.
+        #[arg(long)]
+        recurrence: Option<String>,
     },
     /// Add one or more tags to a task.
     Tag { id: String, tags: Vec<String> },
@@ -359,6 +364,7 @@ async fn main() -> anyhow::Result<()> {
             notes,
             status,
             due,
+            recurrence,
         } => {
             let id = Id::new(id);
             let mut task = svc.snapshot(&id).await?;
@@ -376,12 +382,29 @@ async fn main() -> anyhow::Result<()> {
                     None
                 } else {
                     Some(
-                        Due::parse(&d)
+                        DueSpec::parse(&d)
                             .map_err(|e| anyhow::anyhow!(e))
-                            .context("parse --due as YYYY-MM-DD or \"YYYY-MM-DD HH:MM\"")?,
+                            .context(
+                                "parse --due as YYYY-MM-DD, \"YYYY-MM-DD HH:MM\", HH:MM, or a weekday name",
+                            )?
+                            .resolve(clock.today()),
                     )
                 };
                 task = svc.set_due(&id, val).await?;
+            }
+            if let Some(r) = recurrence {
+                let val = if r == "none" {
+                    None
+                } else {
+                    Some(
+                        Recurrence::parse(&r)
+                            .map_err(|e| anyhow::anyhow!(e))
+                            .context(
+                                "parse --recurrence as \"daily\", \"every N days\", \"every mon,wed,fri\", \"monthly\", or \"every N months\"",
+                            )?,
+                    )
+                };
+                task = svc.set_recurrence(&id, val).await?;
             }
             print_json(&task)?;
         }

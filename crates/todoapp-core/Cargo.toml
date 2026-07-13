@@ -18,3 +18,4 @@ jiff.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+rstest.workspace = true

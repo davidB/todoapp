@@ -1,8 +1,9 @@
-//! Special title syntax: `@name` mentions (FR-32) and `#tag` tags (FR-33), a
-//! planned family sharing one scan so the title (and its code-span skipping)
-//! is only walked once. Pure text scan, no I/O — belongs in core.
+//! Special title syntax: `@name` mentions (FR-32), `#tag` tags (FR-33), and
+//! `[...]` due-date/recurrence brackets (FR-34) — a family sharing one scan
+//! so the title (and its code-span skipping) is only walked once. Pure text
+//! scan, no I/O — belongs in core.
 
-use crate::model::Id;
+use crate::model::{DueSpec, Id, Recurrence};
 
 fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '-'
@@ -13,25 +14,52 @@ fn is_word_char(c: char) -> bool {
 }
 
 /// Result of [`extract_title_syntax`]: the cleaned title plus whatever
-/// special syntax was found, each in first-seen, deduplicated order.
+/// special syntax was found, each in first-seen, deduplicated order (`due`/
+/// `recurrence` keep the first successfully-parsed bracket of their kind).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExtractedTitle {
     pub title: String,
     pub mentions: Vec<Id>,
     pub tags: Vec<String>,
+    pub due: Option<DueSpec>,
+    pub recurrence: Option<Recurrence>,
 }
 
-/// Extract `@name` mentions and `#tag` tags from `title` in a single pass,
-/// skipping backtick-delimited code spans (CommonMark-style: a run of N
-/// backticks opens, the next run of exactly N backticks closes; an
-/// unterminated run is just literal text). A trigger is `@`/`#` not preceded
-/// by a word character, followed by 1+ of `[A-Za-z0-9_-]`. Returns the
+enum BracketValue {
+    Due(DueSpec),
+    Recurrence(Recurrence),
+}
+
+/// Dispatch a `[...]` bracket's trimmed content: a due-date value
+/// ([`DueSpec::parse`]) or a recurrence expression ([`Recurrence::parse`]) —
+/// the same relaxed grammars reused by the TUI edit form and CLI `--due`/
+/// `--recurrence`. `None` if nothing matches — the bracket is then left as
+/// literal text by the caller.
+fn parse_bracket(content: &str) -> Option<BracketValue> {
+    let content = content.trim();
+    if let Ok(spec) = DueSpec::parse(content) {
+        return Some(BracketValue::Due(spec));
+    }
+    Recurrence::parse(content)
+        .ok()
+        .map(BracketValue::Recurrence)
+}
+
+/// Extract `@name` mentions, `#tag` tags, and `[...]` due/recurrence
+/// brackets from `title` in a single pass, skipping backtick-delimited code
+/// spans (CommonMark-style: a run of N backticks opens, the next run of
+/// exactly N backticks closes; an unterminated run is just literal text). A
+/// `@`/`#` trigger is one not preceded by a word character, followed by 1+ of
+/// `[A-Za-z0-9_-]`. A `[...]` bracket is stripped only if its content parses
+/// (see [`parse_bracket`]); otherwise it's left as literal text. Returns the
 /// cleaned title (triggers removed, whitespace collapsed, then trimmed).
 pub fn extract_title_syntax(title: &str) -> ExtractedTitle {
     let chars: Vec<char> = title.chars().collect();
     let mut out = String::with_capacity(title.len());
     let mut mentions: Vec<Id> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
+    let mut due: Option<DueSpec> = None;
+    let mut recurrence: Option<Recurrence> = None;
     let mut prev_word = false;
     let mut i = 0;
     while i < chars.len() {
@@ -74,6 +102,31 @@ pub fn extract_title_syntax(title: &str) -> ExtractedTitle {
             }
             continue;
         }
+        if c == '[' {
+            let start = i;
+            if let Some(rel) = chars[i + 1..].iter().position(|&x| x == ']') {
+                let content_end = i + 1 + rel;
+                let content: String = chars[start + 1..content_end].iter().collect();
+                if let Some(value) = parse_bracket(&content) {
+                    match value {
+                        BracketValue::Due(d) => {
+                            due.get_or_insert(d);
+                        }
+                        BracketValue::Recurrence(r) => {
+                            recurrence.get_or_insert(r);
+                        }
+                    }
+                    let end = content_end + 1;
+                    i = if chars.get(end) == Some(&' ') {
+                        end + 1
+                    } else {
+                        end
+                    };
+                    prev_word = false;
+                    continue;
+                }
+            }
+        }
         if (c == '@' || c == '#') && !prev_word {
             let start = i;
             let mut j = i + 1;
@@ -106,12 +159,20 @@ pub fn extract_title_syntax(title: &str) -> ExtractedTitle {
         title: out.trim().to_string(),
         mentions,
         tags,
+        due,
+        recurrence,
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use rstest::rstest;
+
     use super::*;
+    use crate::model::{RepeatCycle, Weekday};
+    use crate::temporal::{Due, Time};
 
     #[test]
     fn plain_mention() {
@@ -212,5 +273,130 @@ mod tests {
         assert_eq!(e.title, "fix bug");
         assert_eq!(e.mentions, vec![Id::new("alice")]);
         assert_eq!(e.tags, vec!["urgent".to_string()]);
+    }
+
+    #[test]
+    fn bracket_absolute_date_only() {
+        let e = extract_title_syntax("Ship it [2026-07-20]");
+        assert_eq!(e.title, "Ship it");
+        assert_eq!(
+            e.due,
+            Some(DueSpec::Absolute(Due::parse("2026-07-20").unwrap()))
+        );
+    }
+
+    #[test]
+    fn bracket_absolute_date_and_time() {
+        let e = extract_title_syntax("Ship it [2026-07-20 09:00]");
+        assert_eq!(
+            e.title, "Ship it",
+            "the date+time bracket should be stripped, not just the date-only prefix"
+        );
+        assert_eq!(
+            e.due,
+            Some(DueSpec::Absolute(Due::parse("2026-07-20 09:00").unwrap()))
+        );
+    }
+
+    #[test]
+    fn bracket_time_only() {
+        let e = extract_title_syntax("Standup [09:00]");
+        assert_eq!(e.title, "Standup");
+        assert_eq!(
+            e.due,
+            Some(DueSpec::TimeOnly(Time::parse("09:00").unwrap()))
+        );
+    }
+
+    #[test]
+    fn bracket_inside_code_span_untouched() {
+        let e = extract_title_syntax("use `[2026-07-20]` as an example");
+        assert_eq!(e.title, "use `[2026-07-20]` as an example");
+        assert!(e.due.is_none());
+    }
+
+    #[test]
+    fn unparsable_bracket_left_literal() {
+        let e = extract_title_syntax("see [the docs] for details");
+        assert_eq!(e.title, "see [the docs] for details");
+        assert!(e.due.is_none());
+        assert!(e.recurrence.is_none());
+    }
+
+    #[test]
+    fn first_due_bracket_wins() {
+        let e = extract_title_syntax("Standup [09:00] then [10:00]");
+        assert_eq!(e.title, "Standup then");
+        assert_eq!(
+            e.due,
+            Some(DueSpec::TimeOnly(Time::parse("09:00").unwrap()))
+        );
+    }
+
+    #[test]
+    fn mention_tag_and_due_together_single_pass() {
+        let e = extract_title_syntax("fix @alice bug #urgent [2026-07-20]");
+        assert_eq!(e.title, "fix bug");
+        assert_eq!(e.mentions, vec![Id::new("alice")]);
+        assert_eq!(e.tags, vec!["urgent".to_string()]);
+        assert_eq!(
+            e.due,
+            Some(DueSpec::Absolute(Due::parse("2026-07-20").unwrap()))
+        );
+    }
+
+    #[rstest]
+    #[case("mon", Weekday::Mon)]
+    #[case("Monday", Weekday::Mon)]
+    #[case("MONDAY", Weekday::Mon)]
+    #[case("fri", Weekday::Fri)]
+    #[case("sunday", Weekday::Sun)]
+    fn weekday_bracket_spellings(#[case] spelling: &str, #[case] expected: Weekday) {
+        let e = extract_title_syntax(&format!("Review [{spelling}]"));
+        assert_eq!(e.title, "Review");
+        assert_eq!(e.due, Some(DueSpec::Weekday(expected)));
+    }
+
+    #[test]
+    fn weekday_bracket_invalid_spelling_left_literal() {
+        let e = extract_title_syntax("Review [someday]");
+        assert_eq!(e.title, "Review [someday]");
+        assert!(e.due.is_none());
+    }
+
+    #[rstest]
+    #[case("daily", RepeatCycle::Daily { every_n_days: 1 })]
+    #[case("every day", RepeatCycle::Daily { every_n_days: 1 })]
+    #[case("every 3 days", RepeatCycle::Daily { every_n_days: 3 })]
+    #[case("weekly", RepeatCycle::Weekly { weekdays: BTreeSet::new() })]
+    #[case("every week", RepeatCycle::Weekly { weekdays: BTreeSet::new() })]
+    #[case(
+        "every mon,wed,fri",
+        RepeatCycle::Weekly { weekdays: BTreeSet::from([Weekday::Mon, Weekday::Wed, Weekday::Fri]) }
+    )]
+    #[case("monthly", RepeatCycle::Monthly { every_n_months: 1 })]
+    #[case("every month", RepeatCycle::Monthly { every_n_months: 1 })]
+    #[case("every 2 months", RepeatCycle::Monthly { every_n_months: 2 })]
+    fn recurrence_bracket_expressions(#[case] expr: &str, #[case] expected_cycle: RepeatCycle) {
+        let e = extract_title_syntax(&format!("Water plants [{expr}]"));
+        assert_eq!(e.title, "Water plants");
+        assert_eq!(
+            e.recurrence,
+            Some(Recurrence {
+                cycle: expected_cycle,
+                time: None
+            })
+        );
+    }
+
+    #[rstest]
+    #[case("every")]
+    #[case("every fortnight")]
+    #[case("every mon,someday")]
+    #[case("hourly")]
+    fn recurrence_bracket_invalid_expressions_left_literal(#[case] expr: &str) {
+        let e = extract_title_syntax(&format!("Water plants [{expr}]"));
+        assert_eq!(e.title, format!("Water plants [{expr}]"));
+        assert!(e.recurrence.is_none());
     }
 }
