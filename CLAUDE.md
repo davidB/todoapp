@@ -29,8 +29,14 @@ Later adapters (per §5): `todoapp-cli`, `todoapp-api`, `todoapp-mcp`, `todoapp-
 - DB path (`resolve_db_path`, shared by CLI + TUI): `--db` flag > nearest
   ancestor `.tda/tda.db` (created by `tda db init`, git-style walk from cwd)
   > OS-standard data dir, e.g. `~/.local/share/tda/tda.db` on Linux.
-  Config path: OS-standard config dir, e.g. `~/.config/tda/tui.toml`. No env
-  var overrides (dropped as YAGNI).
+  Config is split by scope, both in the OS-standard config dir, with path
+  resolution + generic TOML parsing colocated in `todoapp-config`
+  (`config_path`/`tui_config_path`/`read_toml`, returning `toml::Value`) so
+  typed schemas stay with their owning crate: `config.toml` for cross-app
+  settings shared with the CLI (currently just `[workspaces]`), `tui.toml`
+  for TUI-only settings (columns/schedule/status/styles/keybindings/behavior,
+  parsed into `todoapp-tui`'s `Config`/`Keymap` via `serde::Deserialize` over
+  the shared `toml::Value`). No env var overrides (dropped as YAGNI).
 - Actor for claim: fixed `Id("me")` — single-user, no auth (spec §2/§13 Q5).
 
 ## Inviolable: the dependency rule (§5)

@@ -25,13 +25,37 @@ pub fn resolve_db_path(cwd: &Path, override_: Option<PathBuf>) -> PathBuf {
         .join("tda/tda.db")
 }
 
-/// `tda` config path (columns/schedule/status/styles/keybindings/workspace
-/// overrides, all in one file), in the OS-standard config dir.
+/// `tda` cross-app config path (currently just `[workspaces]`; shared by
+/// `todoapp-cli` and `todoapp-tui`), in the OS-standard config dir. TUI-only
+/// settings (columns/schedule/status/styles/keybindings) live in a separate
+/// `tui.toml`, owned by `todoapp-tui`.
 #[must_use]
 pub fn config_path() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
+        .join("tda/config.toml")
+}
+
+/// TUI-only settings path (columns/schedule/status/styles/keybindings/
+/// behavior) — separate from [`config_path`] (cross-app `[workspaces]`),
+/// but colocated here so path resolution + generic TOML parsing live in one
+/// place regardless of who owns the typed schema.
+#[must_use]
+pub fn tui_config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("tda/tui.toml")
+}
+
+/// Reads and parses the TOML file at `path` into a generic value, for the
+/// caller to deserialize its own typed sub-tables from (`serde::Deserialize`
+/// over `&toml::Value` works like over any other `Deserializer`). Returns
+/// `None` if the file is missing or unreadable/unparseable.
+#[must_use]
+pub fn read_toml(path: &Path) -> Option<toml::Value> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
 }
 
 /// `[workspaces]` table of the config file: workspace name → per-machine local
@@ -137,7 +161,7 @@ mod override_tests {
     #[test]
     fn round_trip_preserves_other_content() {
         let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join("tui.toml");
+        let file = tmp.path().join("config.toml");
         std::fs::write(
             &file,
             "# a user comment\n[columns]\nwidth = 10\n\n[workspaces]\nother = \"/kept\"\n",
@@ -161,7 +185,7 @@ mod override_tests {
     #[test]
     fn creates_table_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join("tui.toml");
+        let file = tmp.path().join("config.toml");
         std::fs::write(&file, "[columns]\nwidth = 10\n").unwrap();
 
         set_override_at(&file, "proj", Some("/x")).unwrap();

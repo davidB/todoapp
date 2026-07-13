@@ -1731,10 +1731,12 @@ pub(crate) mod tests {
     }
 
     async fn new_app_with(keymap_toml: Option<&str>, config_toml: Option<&str>) -> AppState {
+        let keymap_toml = keymap_toml.map(|s| toml::from_str(s).expect("valid TOML"));
+        let config_toml = config_toml.map(|s| toml::from_str(s).expect("valid TOML"));
         AppState::new(
             TursoStore::open_memory().await,
-            Keymap::load(keymap_toml).unwrap(),
-            Config::load(config_toml).unwrap(),
+            Keymap::load(keymap_toml.as_ref()).unwrap(),
+            Config::load(config_toml.as_ref()).unwrap(),
             Box::new(crate::clipboard::FakeClipboard::default()),
         )
         .await

@@ -13,7 +13,7 @@ mod ui;
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use todoapp_config::{config_path, open_store};
+use todoapp_config::{open_store, read_toml, tui_config_path};
 
 use crate::app::AppState;
 pub use crate::app::{SystemClock, UlidGen, make_svc};
@@ -22,11 +22,8 @@ use crate::config::Config;
 use crate::keymap::Keymap;
 
 fn load_tui_config() -> anyhow::Result<(Config, Keymap)> {
-    let user_toml = std::fs::read_to_string(config_path()).ok();
-    Ok((
-        Config::load(user_toml.as_deref())?,
-        Keymap::load(user_toml.as_deref())?,
-    ))
+    let user = read_toml(&tui_config_path());
+    Ok((Config::load(user.as_ref())?, Keymap::load(user.as_ref())?))
 }
 
 pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {

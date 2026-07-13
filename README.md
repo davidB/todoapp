@@ -127,22 +127,17 @@ OS-standard data dir (e.g. `~/.local/share/tda/tda.db` on Linux).
 
 ### Configuration
 
-The TUI's columns, work schedule, status set/colors, and keybindings are all
-retunable without a Rust change, via one optional TOML file:
+Config is split by scope, both optional TOML files in the OS-standard config
+dir — only the fields/tables you set are overridden, everything else keeps
+its embedded default:
 
-| | |
-|---|---|
-| Path | `~/.config/tda/tui.toml` (OS-standard config dir) |
-| Default | [`crates/todoapp-tui/tui.default.toml`](crates/todoapp-tui/tui.default.toml) |
+| File | Scope | Contents |
+|---|---|---|
+| `~/.config/tda/tui.toml` | TUI only | `[columns]` (order/visibility), `[schedule]` (hours/days used to project the `eta` column), `[status]` (enabled statuses, cycle order, glyphs, spinner), `[styles]` (colors and text styles), `[keybindings]` (action → key chords, e.g. `move_down = ["j", "down"]`), `[behavior]` (e.g. `chain_add = true` keeps the add-task dialog open at the same level after `alt+enter`, for fast batch entry; defaults to `false`) |
+| `~/.config/tda/config.toml` | Cross-app (CLI + TUI) | `[workspaces]` — per-machine local-path overrides for `tda ws init` bindings, keyed by workspace name |
 
-Copy the default file to that path and edit it — only the fields/actions you
-set are overridden, everything else keeps its embedded default. It has six
-tables: `[columns]` (order/visibility), `[schedule]` (hours/days used to
-project the `eta` column), `[status]` (which statuses are enabled, their
-cycle order, glyphs, spinner), `[styles]` (colors and text styles),
-`[keybindings]` (action → key chords, e.g. `move_down = ["j", "down"]`), and
-`[behavior]` (e.g. `chain_add = true` keeps the add-task dialog open at the
-same level after `alt+enter`, for fast batch entry; defaults to `false`).
+`tui.toml`'s default, used as the template to copy from, lives at
+[`crates/todoapp-tui/tui.default.toml`](crates/todoapp-tui/tui.default.toml).
 
 The `tda` binary can also be driven non-interactively for scripting and
 agents:

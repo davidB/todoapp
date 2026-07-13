@@ -2,9 +2,10 @@
 //! config TOML maps action name -> list of key chords (e.g.
 //! `move_down = ["j", "down"]`). Defaults ship embedded in the binary
 //! (`tui.default.toml`) so retuning never requires a Rust change — an
-//! optional user file at `~/.config/tda/tui.toml` (the OS-standard config
-//! dir) overrides individual actions. Same embedded-default + user-override
-//! TOML pattern as [`crate::config`].
+//! optional user file at `~/.config/tda/tui.toml` (path + generic TOML
+//! parsing via `todoapp_config::{tui_config_path, read_toml}`) overrides
+//! individual actions. Same embedded-default + user-override pattern as
+//! [`crate::config`].
 
 use std::collections::HashMap;
 
@@ -224,15 +225,17 @@ impl Keymap {
         Ok(bindings)
     }
 
-    /// Load defaults, then apply `user_toml` overrides (if given) on top —
-    /// each named action replaces its whole key list; unmentioned actions
-    /// keep their default keys.
-    pub fn load(user_toml: Option<&str>) -> anyhow::Result<Self> {
+    /// Load defaults, then apply `user` overrides (if given) on top — each
+    /// named action replaces its whole key list; unmentioned actions keep
+    /// their default keys. `user` is the already-parsed `tui.toml` (see
+    /// `todoapp_config::read_toml`); this module only reads `[keybindings]`
+    /// and ignores the rest (see [`crate::config`]).
+    pub fn load(user: Option<&toml::Value>) -> anyhow::Result<Self> {
         let default: RawKeymapDoc =
             toml::from_str(DEFAULT_KEYMAP_TOML).context("parse embedded default keymap")?;
         let mut raw = default.keybindings;
-        if let Some(user_toml) = user_toml {
-            let overrides: RawKeymapDoc = toml::from_str(user_toml).context("parse user keymap")?;
+        if let Some(user) = user {
+            let overrides = RawKeymapDoc::deserialize(user.clone()).context("parse user keymap")?;
             for (name, chords) in overrides.keybindings {
                 if Action::from_name(&name).is_none() {
                     bail!("unknown keybinding action {name:?}");
@@ -266,6 +269,10 @@ impl Keymap {
 mod tests {
     use super::*;
 
+    fn v(s: &str) -> toml::Value {
+        toml::from_str(s).expect("valid TOML")
+    }
+
     #[test]
     fn default_keymap_parses_without_conflicts() {
         let keymap = Keymap::load(None).expect("default keymap must parse");
@@ -287,7 +294,7 @@ mod tests {
     fn override_replaces_only_the_named_action() {
         let user = r#"[keybindings]
 move_up = ["ctrl+p"]"#;
-        let keymap = Keymap::load(Some(user)).expect("override must parse");
+        let keymap = Keymap::load(Some(&v(user))).expect("override must parse");
         assert_eq!(
             keymap.lookup(KeyCode::Char('p'), KeyModifiers::CONTROL),
             Some(Action::MoveUp)
@@ -304,6 +311,6 @@ move_up = ["ctrl+p"]"#;
     fn colliding_chord_across_actions_is_an_error() {
         let user = r#"[keybindings]
 move_up = ["j"]"#;
-        assert!(Keymap::load(Some(user)).is_err());
+        assert!(Keymap::load(Some(&v(user))).is_err());
     }
 }

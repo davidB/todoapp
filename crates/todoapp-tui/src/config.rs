@@ -1,11 +1,12 @@
 //! General TUI config: tree-table column order/visibility + the work
 //! calendar used to project the `eta` column. Same embedded-default +
-//! user-override TOML pattern as [`crate::keymap`]: an optional user file at
-//! an optional user file at `~/.config/tda/tui.toml` (the OS-standard config
-//! dir) overrides individual fields; unmentioned fields keep their embedded
-//! defaults. Shares the file with `[keybindings]` (see [`crate::keymap`]) —
-//! this module only reads the `columns`/`schedule`/`status`/`styles` tables
-//! and ignores the rest.
+//! user-override pattern as [`crate::keymap`]: an optional user file at
+//! `~/.config/tda/tui.toml` (path + generic TOML parsing via
+//! `todoapp_config::{tui_config_path, read_toml}`) overrides individual
+//! fields; unmentioned fields keep their embedded defaults. Shares the file
+//! with `[keybindings]` (see [`crate::keymap`]) — this module only reads the
+//! `columns`/`schedule`/`status`/`styles`/`behavior` tables and ignores the
+//! rest.
 
 use std::collections::BTreeMap;
 
@@ -236,11 +237,14 @@ impl Config {
 }
 
 impl Config {
-    /// Load defaults, then apply `user_toml` overrides (if given) on top —
-    /// each present field replaces its default; unmentioned fields keep their
-    /// embedded default.
+    /// Load defaults, then apply `user` overrides (if given) on top — each
+    /// present field replaces its default; unmentioned fields keep their
+    /// embedded default. `user` is the already-parsed `[columns]`/
+    /// `[schedule]`/`[status]`/`[styles]`/`[behavior]` tables of `tui.toml`
+    /// (see `todoapp_config::read_toml`); this module only reads those and
+    /// ignores `[keybindings]` (see [`crate::keymap`]).
     #[allow(clippy::too_many_lines, clippy::similar_names)]
-    pub fn load(user_toml: Option<&str>) -> anyhow::Result<Self> {
+    pub fn load(user: Option<&toml::Value>) -> anyhow::Result<Self> {
         let default: RawConfig =
             toml::from_str(DEFAULT_CONFIG_TOML).context("parse embedded default config")?;
         let mut columns = default
@@ -301,8 +305,8 @@ impl Config {
             .chain_add
             .context("default config missing behavior.chain_add")?;
 
-        if let Some(user_toml) = user_toml {
-            let overrides: RawConfig = toml::from_str(user_toml).context("parse user config")?;
+        if let Some(user) = user {
+            let overrides = RawConfig::deserialize(user.clone()).context("parse user config")?;
             if let Some(order) = overrides.columns.order {
                 columns = order;
             }
@@ -439,6 +443,10 @@ impl Config {
 mod tests {
     use super::*;
 
+    fn v(s: &str) -> toml::Value {
+        toml::from_str(s).expect("valid TOML")
+    }
+
     #[test]
     fn default_config_parses() {
         let config = Config::load(None).expect("default config must parse");
@@ -450,7 +458,7 @@ mod tests {
     #[test]
     fn override_replaces_only_the_named_field() {
         let user = "schedule.days_per_week = 6";
-        let config = Config::load(Some(user)).expect("override must parse");
+        let config = Config::load(Some(&v(user))).expect("override must parse");
         assert_eq!(config.days_per_week, 6);
         assert_eq!(config.hours_per_day, Duration::from_minutes(480));
     }
@@ -458,7 +466,7 @@ mod tests {
     #[test]
     fn unknown_column_is_an_error() {
         let user = r#"columns.order = ["bogus"]"#;
-        assert!(Config::load(Some(user)).is_err());
+        assert!(Config::load(Some(&v(user))).is_err());
     }
 
     #[test]
@@ -503,7 +511,7 @@ mod tests {
     #[test]
     fn unknown_style_color_is_an_error() {
         let user = r#"styles.overdue_color = "bogus""#;
-        assert!(Config::load(Some(user)).is_err());
+        assert!(Config::load(Some(&v(user))).is_err());
     }
 
     #[test]
@@ -518,13 +526,13 @@ mod tests {
     #[test]
     fn unknown_status_is_an_error() {
         let user = r#"status.enabled = ["bogus"]"#;
-        assert!(Config::load(Some(user)).is_err());
+        assert!(Config::load(Some(&v(user))).is_err());
     }
 
     #[test]
     fn status_override_narrows_cycle_order() {
         let user = r#"status.enabled = ["todo", "wip", "done"]"#;
-        let config = Config::load(Some(user)).expect("override must parse");
+        let config = Config::load(Some(&v(user))).expect("override must parse");
         assert_eq!(
             config.status_order,
             vec![Status::Todo, Status::Wip, Status::Done]
