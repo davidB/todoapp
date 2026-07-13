@@ -10,7 +10,7 @@ mod schedule;
 mod text_edit;
 mod ui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use todoapp_store_turso::TursoStore;
@@ -21,9 +21,20 @@ use crate::clipboard::{Clipboard, SystemClipboard};
 use crate::config::Config;
 use crate::keymap::Keymap;
 
-/// DB path, in the OS-standard data dir. Same resolution used by `todoapp-cli`.
+/// DB path resolution, shared with `todoapp-cli`: explicit override, else the
+/// nearest ancestor `.tda/tda.db` (walking up from `cwd`, like git — created
+/// by `tda db init`), else the global db in the OS-standard data dir.
 #[must_use]
-pub fn db_path() -> PathBuf {
+pub fn resolve_db_path(cwd: &Path, override_: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = override_ {
+        return path;
+    }
+    for dir in cwd.ancestors() {
+        let marker = dir.join(".tda");
+        if marker.is_dir() {
+            return marker.join("tda.db");
+        }
+    }
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tda/tda.db")
@@ -45,10 +56,12 @@ fn load_tui_config() -> anyhow::Result<(Config, Keymap)> {
     ))
 }
 
-/// Opens the `TursoStore` at [`db_path`], creating its parent directory if needed.
-/// Shared by `todoapp-cli`, which opens the same store for its non-TUI commands.
-pub async fn open_store() -> anyhow::Result<TursoStore> {
-    let path = db_path();
+/// Opens the `TursoStore` at the [`resolve_db_path`] result, creating its
+/// parent directory if needed. Shared by `todoapp-cli`, which opens the same
+/// store for its non-TUI commands; `db` is the `--db` flag override.
+pub async fn open_store(db: Option<PathBuf>) -> anyhow::Result<TursoStore> {
+    let cwd = std::env::current_dir().context("current dir")?;
+    let path = resolve_db_path(&cwd, db);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create db directory")?;
     }
@@ -56,8 +69,8 @@ pub async fn open_store() -> anyhow::Result<TursoStore> {
     TursoStore::open(path_str).await.context("open database")
 }
 
-pub async fn run() -> anyhow::Result<()> {
-    let store = open_store().await?;
+pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
+    let store = open_store(db).await?;
     let (config, keymap) = load_tui_config().context("load tui config")?;
 
     let clipboard: Box<dyn Clipboard> = Box::new(SystemClipboard::new());
@@ -100,4 +113,40 @@ async fn run_loop(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod db_path_tests {
+    use super::resolve_db_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn override_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".tda")).unwrap();
+        let explicit = PathBuf::from("/elsewhere/x.db");
+        assert_eq!(
+            resolve_db_path(tmp.path(), Some(explicit.clone())),
+            explicit
+        );
+    }
+
+    #[test]
+    fn finds_ancestor_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".tda")).unwrap();
+        let nested = tmp.path().join("a/b");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            resolve_db_path(&nested, None),
+            tmp.path().join(".tda/tda.db")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_global() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = resolve_db_path(tmp.path(), None);
+        assert!(resolved.ends_with("tda/tda.db"), "{}", resolved.display());
+    }
 }

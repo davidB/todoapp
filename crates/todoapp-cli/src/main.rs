@@ -112,9 +112,12 @@ enum FormatArg {
 #[command(
     name = "tda",
     about = "Task and dependency manager — JSON output for agents/scripts",
-    after_help = "Config: ~/.config/tda/tui.toml. Data: the OS data dir (e.g. ~/.local/share/tda/tda.db on Linux)."
+    after_help = "Config: ~/.config/tda/tui.toml. Data: --db path if given, else the nearest ancestor .tda/tda.db (see `tda db init`), else the OS data dir (e.g. ~/.local/share/tda/tda.db on Linux)."
 )]
 struct Cli {
+    /// Database file to use (overrides local/global discovery).
+    #[arg(long, global = true)]
+    db: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -247,6 +250,20 @@ enum Cmd {
     },
     /// Attach a file's contents to a task.
     Attach { id: String, file: PathBuf },
+    /// Database management.
+    Db {
+        #[command(subcommand)]
+        cmd: DbCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum DbCmd {
+    /// Create a local database at ./.tda/tda.db, used by any `tda` run in
+    /// this directory or below (like `git init`). Idempotent.
+    Init,
+    /// Print the database path the current directory resolves to.
+    Path,
 }
 
 // ---- main -------------------------------------------------------------------
@@ -256,16 +273,32 @@ enum Cmd {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Cmd::Tui = cli.cmd {
-        return todoapp_tui::run().await;
+        return todoapp_tui::run(cli.db).await;
+    }
+    if let Cmd::Db { cmd } = &cli.cmd {
+        let cwd = std::env::current_dir().context("current dir")?;
+        match cmd {
+            DbCmd::Init => {
+                let path = cwd.join(".tda/tda.db");
+                // open_store creates the .tda dir and initializes the schema
+                todoapp_tui::open_store(Some(path.clone())).await?;
+                writeln!(io::stdout(), "{}", path.display())?;
+            }
+            DbCmd::Path => {
+                let path = todoapp_tui::resolve_db_path(&cwd, cli.db);
+                writeln!(io::stdout(), "{}", path.display())?;
+            }
+        }
+        return Ok(());
     }
 
-    let store = todoapp_tui::open_store().await?;
+    let store = todoapp_tui::open_store(cli.db).await?;
     let clock = SystemClock;
     let ids = UlidGen;
     let svc = make_svc(&store, &clock, &ids);
 
     match cli.cmd {
-        Cmd::Tui => unreachable!("handled above"),
+        Cmd::Tui | Cmd::Db { .. } => unreachable!("handled above"),
         Cmd::Add {
             title,
             parent,

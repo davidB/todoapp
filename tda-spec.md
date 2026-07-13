@@ -387,7 +387,16 @@ tda import <file> --format md|json [--parent root|default|<id>]
   # --parent root: attach top-level items directly at the root (old behavior)
   # --parent <id>: attach top-level items under that existing task
 tda template save <id> <name>    tda template apply <name> --to <id>
+
+tda db init                      # create a local ./.tda/tda.db (git-style, idempotent)
+tda db path                      # print the resolved database path
 ```
+
+**[DECISION] Database resolution** (CLI + TUI, shared): `--db <path>` flag >
+nearest ancestor `.tda/tda.db` (walking up from cwd, like git — created only
+by an explicit `tda db init`, so no surprise local dbs) > global default in
+the OS data dir (`~/.local/share/tda/tda.db`). No env var override (YAGNI).
+Enables per-project/isolated/test databases with zero per-call ceremony.
 
 Design the CLI so every command emits machine-readable JSON with `--json` — this *is* the agent interface until the MCP server lands (`FR-18`/`FR-21`).
 
