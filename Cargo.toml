@@ -4,20 +4,20 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
-version = "0.3.0"
+version = "0.4.0"
 license = "Apache-2.0"
 repository = "https://github.com/davidB/todoapp"
 homepage = "https://github.com/davidB/todoapp"
 publish = true
 
 [workspace.dependencies]
-todoapp-core = { version = "0.3.0", path = "crates/todoapp-core" }
-todoapp-app = { version = "0.3.0", path = "crates/todoapp-app" }
+todoapp-core = { version = "0.4.0", path = "crates/todoapp-core" }
+todoapp-app = { version = "0.4.0", path = "crates/todoapp-app" }
 todoapp-store-mem = { path = "crates/todoapp-store-mem" }
-todoapp-store-turso = { version = "0.3.0", path = "crates/todoapp-store-turso" }
+todoapp-store-turso = { version = "0.4.0", path = "crates/todoapp-store-turso" }
 todoapp-conformance = { path = "crates/todoapp-conformance" }
-todoapp-config = { version = "0.3.0", path = "crates/todoapp-config" }
-todoapp-tui = { version = "0.3.0", path = "crates/todoapp-tui" }
+todoapp-config = { version = "0.4.0", path = "crates/todoapp-config" }
+todoapp-tui = { version = "0.4.0", path = "crates/todoapp-tui" }
 # Turso: the async embedded SQLite-compatible engine (spec §6). Beta. Adapter-only.
 turso = "0.7.0-pre.10"
 
