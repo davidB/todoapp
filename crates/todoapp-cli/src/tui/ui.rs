@@ -377,28 +377,57 @@ mod progress_bar_tests {
     }
 }
 
+/// Render a breadcrumb path (root→parent ancestor titles) as styled spans:
+/// each crumb via `render_inline` (first line + ellipsis, exactly like a
+/// tree/list row title), joined by ` › ` and patched onto `base`. Shared by the
+/// list-view row prefix and the details pane so the two stay consistent (and so
+/// a multi-line ancestor title collapses instead of breaking the layout).
+fn breadcrumb_spans(path: &[String], per_crumb_width: usize, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, crumb) in path.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" › ", base));
+        }
+        spans.extend(
+            crate::tui::markdown::render_inline(crumb, per_crumb_width)
+                .into_iter()
+                .map(|s| Span {
+                    style: s.style.patch(base),
+                    content: s.content,
+                }),
+        );
+    }
+    spans
+}
+
 fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::QueryHit]) {
     let inner_width = area.width.saturating_sub(2); // block's left/right border
     let items: Vec<ListItem> = hits
         .iter()
         .enumerate()
         .map(|(i, hit)| {
-            let breadcrumb = if hit.path.is_empty() {
-                String::new()
-            } else {
-                format!("[{}] ", hit.path.join(" › "))
-            };
             let icon = status_icon(hit.task.status, app);
-            let prefix = breadcrumb;
+            let mut prefix = Vec::new();
+            if !hit.path.is_empty() {
+                prefix.push(Span::raw("["));
+                prefix.extend(breadcrumb_spans(
+                    &hit.path,
+                    usize::from(inner_width),
+                    Style::default(),
+                ));
+                prefix.push(Span::raw("] "));
+            }
+            let prefix_width: usize = prefix.iter().map(|s| s.content.chars().count()).sum();
             let title_width = usize::from(inner_width)
-                .saturating_sub(prefix.chars().count())
+                .saturating_sub(prefix_width)
                 .saturating_sub(icon.chars().count() + 1)
                 .max(1);
-            let mut spans = vec![
-                Span::raw(prefix),
-                Span::styled(icon, app.config.style_for(Semantic::Glyph(hit.task.status))),
-                Span::raw(" "),
-            ];
+            let mut spans = prefix;
+            spans.push(Span::styled(
+                icon,
+                app.config.style_for(Semantic::Glyph(hit.task.status)),
+            ));
+            spans.push(Span::raw(" "));
             let title_base = app.config.style_for(Semantic::Text(hit.task.status));
             let title_spans = match (i == app.cursor, app.selection) {
                 (true, Some(sel)) => selection_spans(&hit.task.title, title_width, sel),
@@ -449,24 +478,9 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppState) {
     let snap = &pane.snap;
     let mut text = crate::tui::markdown::render(&snap.title);
     if !pane.breadcrumb.is_empty() {
-        // Same one-line + ellipsis rendering as a tree/list row title
-        // (`markdown::render_inline`), forced dim so crumbs read as context.
         let dim = Style::default().fg(Color::DarkGray);
         let width = usize::from(left.width.saturating_sub(1)).max(1);
-        let mut spans: Vec<Span> = Vec::new();
-        for (i, crumb) in pane.breadcrumb.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::styled(" / ", dim));
-            }
-            spans.extend(
-                crate::tui::markdown::render_inline(crumb, width)
-                    .into_iter()
-                    .map(|s| Span {
-                        style: s.style.patch(dim),
-                        content: s.content,
-                    }),
-            );
-        }
+        let spans = breadcrumb_spans(&pane.breadcrumb, width, dim);
         text.lines.insert(0, Line::from(spans));
     }
     if let Some(notes) = &snap.notes
