@@ -103,10 +103,16 @@ async fn run_loop(
             }
 
             let term_width = terminal.size()?.width;
-            if let Some(event) = event
-                && !app.handle_event(event, term_width).await?
-            {
-                break;
+            if let Some(event) = event {
+                if !app.handle_event(event, term_width).await? {
+                    break;
+                }
+                // Keep the details pane in sync with the selection after a
+                // handled keystroke (cursor move, edit, ...). Human-paced, so
+                // one snapshot per keypress is negligible.
+                // ponytail: refresh per-keystroke, not per-frame — skips idle
+                // spinner ticks, avoiding needless DB queries.
+                app.refresh_detail().await;
             }
         }
         Ok::<(), anyhow::Error>(())

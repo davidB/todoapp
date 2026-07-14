@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use todoapp_app::{Anchor, QueryHit};
+use todoapp_app::{Anchor, QueryHit, TaskSnapshot};
 use todoapp_core::{
-    Assignment, Clock, Date, Due, DueSpec, Duration, Filter, Id, Query, Status, TaskEntityStore,
-    Workspace, shortest_unique_prefixes,
+    Assignment, Clock, Date, Due, DueSpec, Duration, Filter, Id, LinkKind, Query, Status,
+    TaskEntityStore, Workspace, shortest_unique_prefixes,
 };
 use todoapp_store_turso::TursoStore;
 use tui_input::{Input, InputRequest};
@@ -54,8 +54,27 @@ pub struct VisibleItem {
 pub enum View {
     Tree,
     List(Vec<QueryHit>),
-    Detail { title: String, notes: String },
     Help,
+}
+
+/// Cached data for the details pane (`detail_shown` toggles visibility). Fetched
+/// async on each handled keystroke / rebuild so it stays in sync with the
+/// selection; rendered read-only in `ui::render_detail`.
+pub struct DetailPane {
+    /// Task this cache is for — `scroll` resets when the selection moves to a
+    /// different task.
+    pub id: Id,
+    pub snap: TaskSnapshot,
+    pub blocked: bool,
+    /// Ancestor titles (root → parent).
+    pub breadcrumb: Vec<String>,
+    /// Titles of not-yet-done tasks blocking this one.
+    pub blockers: Vec<String>,
+    /// Inherited workspace name (from an ancestor), shown when the task has no
+    /// workspace of its own.
+    pub inherited_ws: Option<String>,
+    /// Notes scroll offset (rows), driven by `DetailScroll{Up,Down}`.
+    pub scroll: u16,
 }
 
 #[derive(Clone)]
@@ -96,6 +115,9 @@ pub const ID_FIELD: usize = 7;
 /// How long a status-bar toast message (yank confirmation, error, ...) stays
 /// visible before falling back to the keybinding hints, absent further input.
 const STATUS_MSG_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Rows the details pane scrolls per `DetailScroll{Up,Down}` keypress.
+const DETAIL_SCROLL_STEP: u16 = 5;
 
 /// A char-index range (into the *first line* of the current row's title)
 /// being extended in select mode. Order-independent — either end may be the
@@ -205,6 +227,11 @@ pub struct AppState {
     /// Active char-range selection on the current row's title (Tree/List),
     /// while in select mode (entered via `Action::Select`).
     pub selection: Option<Selection>,
+    /// Whether the (non-modal) details pane is toggled on (`Action::ViewDetail`).
+    pub detail_shown: bool,
+    /// Cached details for the current selection; `None` when the pane is shown
+    /// but nothing is selected. Refreshed by `refresh_detail`.
+    pub detail: Option<DetailPane>,
     /// Transient one-line message shown in the status bar, as a toast: reset
     /// on the next keypress (see `handle_event`) and auto-expires after
     /// `STATUS_MSG_TTL` even with no further input (checked in `ui.rs`'s
@@ -396,6 +423,8 @@ impl AppState {
             ws_picker: None,
             ws_editor: None,
             selection: None,
+            detail_shown: false,
+            detail: None,
             status_msg: None,
             status_msg_expires_at: None,
             keymap,
@@ -421,13 +450,13 @@ impl AppState {
         if self.cursor >= self.items.len() {
             self.cursor = self.items.len().saturating_sub(1);
         }
+        self.refresh_detail().await;
     }
 
     fn item_count(&self) -> usize {
         match &self.view {
             View::Tree | View::Help => self.items.len(),
             View::List(hits) => hits.len(),
-            View::Detail { .. } => 0,
         }
     }
 
@@ -435,12 +464,69 @@ impl AppState {
         self.items.get(self.cursor).map(|i| i.id.clone())
     }
 
+    /// Id of the current selection, for Tree and List views (the details pane
+    /// follows this). Tree/Help use the flat item list; List uses its hits.
+    pub fn selected_id(&self) -> Option<Id> {
+        match &self.view {
+            View::Tree | View::Help => self.items.get(self.cursor).map(|i| i.id.clone()),
+            View::List(hits) => hits.get(self.cursor).map(|h| h.task.id.clone()),
+        }
+    }
+
+    /// Repopulate `self.detail` for the current selection when the pane is
+    /// shown. Cheap enough to run per handled keystroke / rebuild; preserves the
+    /// notes scroll offset only while the selection stays on the same task.
+    pub async fn refresh_detail(&mut self) {
+        if !self.detail_shown {
+            self.detail = None;
+            return;
+        }
+        let Some(id) = self.selected_id() else {
+            self.detail = None;
+            return;
+        };
+        let prev_scroll = match &self.detail {
+            Some(d) if d.id == id => d.scroll,
+            _ => 0,
+        };
+        let pane = {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            let Ok(snap) = svc.snapshot(&id).await else {
+                self.detail = None;
+                return;
+            };
+            let blocked = svc.is_blocked(&id).await;
+            let breadcrumb = svc.breadcrumb(&id).await;
+            let inherited_ws = match svc.parent_of(&id).await {
+                Some(parent) => svc.workspace_of(&parent).await.map(|w| w.name),
+                None => None,
+            };
+            let mut blockers = Vec::new();
+            for l in svc.links.incoming(&id, LinkKind::Blocks).await {
+                if let Ok(bs) = svc.snapshot(&l.from).await
+                    && bs.status != Status::Done
+                {
+                    blockers.push(bs.title);
+                }
+            }
+            DetailPane {
+                id,
+                snap,
+                blocked,
+                breadcrumb,
+                blockers,
+                inherited_ws,
+                scroll: prev_scroll,
+            }
+        };
+        self.detail = Some(pane);
+    }
+
     /// Raw (unrendered) title of the current row, Tree/List only.
     fn current_row_title(&self) -> Option<&str> {
         match &self.view {
             View::Tree | View::Help => self.items.get(self.cursor).map(|i| i.title.as_str()),
             View::List(hits) => hits.get(self.cursor).map(|h| h.task.title.as_str()),
-            View::Detail { .. } => None,
         }
     }
 
@@ -671,16 +757,22 @@ impl AppState {
                     self.confirm_delete = Some((item.id.clone(), item.has_children));
                 }
             }
-            // View rendered title/notes (tree only)
-            Action::ViewDetail if in_tree => {
-                if let Some(id) = self.cursor_id() {
-                    let svc = make_svc(&self.store, &self.clock, &self.ids);
-                    if let Ok(snap) = svc.snapshot(&id).await {
-                        self.view = View::Detail {
-                            title: snap.title,
-                            notes: snap.notes.unwrap_or_default(),
-                        };
-                    }
+            // Toggle the (non-modal) details pane; it follows the selection and
+            // leaves the main tree/list focused, so it works from any view.
+            Action::ViewDetail => {
+                self.detail_shown = !self.detail_shown;
+                self.refresh_detail().await;
+            }
+            // Scroll the details pane's notes (pane doesn't take focus, so it
+            // has its own keys). No-op when the pane is hidden.
+            Action::DetailScrollDown => {
+                if let Some(d) = self.detail.as_mut() {
+                    d.scroll = d.scroll.saturating_add(DETAIL_SCROLL_STEP);
+                }
+            }
+            Action::DetailScrollUp => {
+                if let Some(d) = self.detail.as_mut() {
+                    d.scroll = d.scroll.saturating_sub(DETAIL_SCROLL_STEP);
                 }
             }
             // Cycle status (tree only)
@@ -2292,5 +2384,64 @@ pub(crate) mod tests {
             app.edit_form.as_ref().unwrap().fields[WORKSPACE_FIELD].value(),
             before
         );
+    }
+
+    /// The details pane is a non-modal toggle: `v` shows/hides it, it follows
+    /// the selection (the run-loop refresh, mirrored here), scrolls with
+    /// PageUp/Down (resetting on task change), and leaves the tree focused so
+    /// editing still works while it's open.
+    #[tokio::test]
+    async fn details_pane_toggles_follows_selection_and_scrolls() {
+        let mut app = new_app().await;
+        for title in ["First", "Second"] {
+            app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+            type_str(&mut app, title).await;
+            app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+                .await
+                .unwrap();
+        }
+        app.handle_event(press(KeyCode::Home, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        let first_id = app.selected_id().unwrap();
+        let first_title = app.items[app.cursor].title.clone();
+
+        // Toggle on: pane appears and caches the selected task.
+        app.handle_event(press_char('v'), TERM_WIDTH).await.unwrap();
+        assert!(app.detail_shown);
+        assert_eq!(app.detail.as_ref().unwrap().id, first_id);
+        assert_eq!(app.detail.as_ref().unwrap().snap.title, first_title);
+
+        // Scroll the pane (its own keys, doesn't move the selection).
+        app.handle_event(press(KeyCode::PageDown, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().scroll, DETAIL_SCROLL_STEP);
+        assert_eq!(app.selected_id().unwrap(), first_id);
+
+        // Navigate: the run-loop refreshes the pane after the keystroke.
+        app.handle_event(press(KeyCode::Down, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        app.refresh_detail().await; // mirrors run_loop
+        let second_id = app.selected_id().unwrap();
+        let second_title = app.items[app.cursor].title.clone();
+        assert_ne!(first_id, second_id);
+        assert_eq!(app.detail.as_ref().unwrap().id, second_id);
+        assert_eq!(app.detail.as_ref().unwrap().snap.title, second_title);
+        assert_eq!(app.detail.as_ref().unwrap().scroll, 0); // reset on task change
+
+        // Pane doesn't steal focus: editing still works while it's shown.
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        assert!(app.edit_form.is_some());
+        assert!(app.detail_shown);
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+
+        // Toggle off.
+        app.handle_event(press_char('v'), TERM_WIDTH).await.unwrap();
+        assert!(!app.detail_shown);
+        assert!(app.detail.is_none());
     }
 }

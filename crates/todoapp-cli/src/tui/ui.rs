@@ -8,15 +8,15 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
-        Wrap,
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, TableState, Wrap,
     },
 };
 use todoapp_core::Status;
 
 use crate::tui::app::{
-    AppState, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View, VisibleItem,
-    WsEditor, WsPicker,
+    AppState, DetailPane, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View,
+    VisibleItem, WsEditor, WsPicker,
 };
 use crate::tui::config::{ColumnKind, Config, Semantic};
 use crate::tui::keymap::{Action, Keymap};
@@ -29,20 +29,21 @@ pub fn render(f: &mut Frame, app: &AppState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .areas(area);
 
-    if let View::Detail { title, notes } = &app.view {
-        // Tree keeps the top half so the cursor's context stays visible;
-        // the detail pane takes the bottom half rather than covering it.
-        let [tree_area, detail_area] = Layout::default()
+    // The details pane (when toggled on) is a non-modal, full-width strip below
+    // the main view — the tree/list keeps focus and the top of the screen.
+    let content = if app.detail_shown {
+        let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .areas(main);
-        render_tree(f, tree_area, app);
-        render_detail(f, detail_area, title, notes);
+        render_detail(f, bottom, app);
+        top
     } else {
-        render_tree(f, main, app);
-        if let View::List(hits) = &app.view {
-            render_list(f, main, app, hits);
-        }
+        main
+    };
+    render_tree(f, content, app);
+    if let View::List(hits) = &app.view {
+        render_list(f, content, app, hits);
     }
 
     render_status_bar(f, status_bar, app);
@@ -419,24 +420,187 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
     f.render_stateful_widget(list, area, &mut state);
 }
 
-/// Read-only rendered view of a task's title + notes (Markdown), opened by
-/// `Action::ViewDetail`. `q`/`esc` (the generic `Action::Quit` back-out)
-/// returns to the tree.
-fn render_detail(f: &mut Frame, area: Rect, title: &str, notes: &str) {
-    let mut text = crate::tui::markdown::render(title);
-    if !notes.is_empty() {
+/// Non-modal details pane for the current selection (toggled by
+/// `Action::ViewDetail`). Two columns: title + notes (Markdown, scrollable) on
+/// the left 2/3, the remaining capabilities as `key: value` lines on the right
+/// 1/3. Read-only — the main tree/list keeps focus.
+fn render_detail(f: &mut Frame, area: Rect, app: &AppState) {
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" details (v to close · pgup/pgdn scroll) ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let Some(pane) = &app.detail else {
+        f.render_widget(
+            Paragraph::new("no task selected").style(Style::default().fg(Color::DarkGray)),
+            inner,
+        );
+        return;
+    };
+
+    let [left, right] = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .areas(inner);
+
+    // ---- Left: breadcrumb + title + notes (Markdown), scrollable ----------
+    let snap = &pane.snap;
+    let mut text = crate::tui::markdown::render(&snap.title);
+    if !pane.breadcrumb.is_empty() {
+        text.lines.insert(
+            0,
+            Line::styled(
+                pane.breadcrumb.join(" / "),
+                Style::default().fg(Color::DarkGray),
+            ),
+        );
+    }
+    if let Some(notes) = &snap.notes
+        && !notes.is_empty()
+    {
         text.lines.push(Line::raw(""));
         text.lines.extend(crate::tui::markdown::render(notes).lines);
     }
+    // Reserve the last column of `left` for the scrollbar track.
+    let text_area = Rect {
+        width: left.width.saturating_sub(1),
+        ..left
+    };
+    let total = u16::try_from(text.lines.len()).unwrap_or(u16::MAX);
+    let viewport = text_area.height;
+    let max_scroll = total.saturating_sub(viewport);
+    let scroll = pane.scroll.min(max_scroll);
     let p = Paragraph::new(text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" details (q/esc to close) "),
-        )
-        .wrap(Wrap { trim: false });
-    f.render_widget(Clear, area);
-    f.render_widget(p, area);
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    f.render_widget(p, text_area);
+    if total > viewport {
+        // ponytail: content length is pre-wrap line count — a hair off once
+        // long lines wrap, but the scrollbar only needs to look about right.
+        let mut sb_state =
+            ScrollbarState::new(usize::from(max_scroll)).position(usize::from(scroll));
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight),
+            left,
+            &mut sb_state,
+        );
+    }
+
+    // ---- Right: remaining capabilities as key: value lines ----------------
+    f.render_widget(
+        Paragraph::new(detail_field_lines(app, pane)).wrap(Wrap { trim: false }),
+        right,
+    );
+}
+
+/// The details pane's right column: one `key: value` line per present
+/// capability, omitting absent ones.
+fn detail_field_lines(app: &AppState, pane: &DetailPane) -> Vec<Line<'static>> {
+    let snap = &pane.snap;
+    let label = Style::default().fg(Color::DarkGray);
+    let mut lines: Vec<Line> = Vec::new();
+    let mut field = |k: &str, v: String| {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{k}: "), label),
+            Span::raw(v),
+        ]));
+    };
+
+    let status = if pane.blocked {
+        format!("{} [blocked]", snap.status)
+    } else {
+        snap.status.to_string()
+    };
+    field("status", status);
+    if let Some(id_disp) = app.short_ids.get(&pane.id) {
+        field("id", id_disp.clone());
+    }
+    if let Some(due) = &snap.due_date {
+        field("due", due.to_string());
+    }
+    if let Some(est) = snap.eta_minutes {
+        field(
+            "estimate",
+            crate::tui::human_duration::format(
+                est,
+                app.config.hours_per_day,
+                app.config.days_per_week,
+            ),
+        );
+    }
+    if !snap.time_spent_minutes.0.is_zero() {
+        field("spent", snap.time_spent_minutes.to_string());
+    }
+    if !snap.tags.is_empty() {
+        field(
+            "tags",
+            snap.tags.iter().cloned().collect::<Vec<_>>().join(", "),
+        );
+    }
+    if !snap.assignments.is_empty() {
+        let assignees = snap
+            .assignments
+            .iter()
+            .map(|a| {
+                if a.claimed {
+                    format!("{}*", a.actor.as_str())
+                } else {
+                    a.actor.as_str().to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        field("assignees", assignees);
+    }
+    match &snap.workspace {
+        Some(w) => field("workspace", w.name.clone()),
+        None => {
+            if let Some(ws) = &pane.inherited_ws {
+                field("workspace", format!("{ws} (inherited)"));
+            }
+        }
+    }
+    if let Some(r) = &snap.recurrence {
+        field("recurs", recurrence_summary(r));
+    }
+    if let Some(iss) = &snap.issue_ref {
+        field("issue", format!("{}#{}", iss.provider, iss.id));
+    }
+    if !snap.attachments.is_empty() {
+        field("attachments", snap.attachments.len().to_string());
+    }
+    if snap.archived {
+        field("archived", "yes".to_string());
+    }
+    for b in &pane.blockers {
+        field("blocked by", b.clone());
+    }
+    field("created", snap.created_at.0.to_string());
+    field("updated", snap.updated_at.0.to_string());
+
+    lines
+}
+
+/// A compact one-line summary of a recurrence rule for the details pane.
+fn recurrence_summary(r: &todoapp_core::Recurrence) -> String {
+    use todoapp_core::RepeatCycle;
+    match &r.cycle {
+        RepeatCycle::Daily { every_n_days: 1 } => "daily".to_string(),
+        RepeatCycle::Daily { every_n_days: n } => format!("every {n} days"),
+        RepeatCycle::Weekly { weekdays } if weekdays.is_empty() => "weekly".to_string(),
+        RepeatCycle::Weekly { weekdays } => {
+            let days = weekdays
+                .iter()
+                .map(|d| format!("{d:?}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("weekly ({days})")
+        }
+        RepeatCycle::Monthly { every_n_months: 1 } => "monthly".to_string(),
+        RepeatCycle::Monthly { every_n_months: n } => format!("every {n} months"),
+    }
 }
 
 fn render_status_bar(f: &mut Frame, area: Rect, app: &AppState) {
