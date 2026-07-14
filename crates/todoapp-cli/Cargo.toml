@@ -43,7 +43,7 @@ clap = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }
 ulid = { workspace = true }
 
 # TUI-only (behind the `tui` feature).
@@ -55,6 +55,9 @@ tui-input = { workspace = true, optional = true }
 arboard = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
