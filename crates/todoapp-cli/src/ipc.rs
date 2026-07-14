@@ -28,3 +28,162 @@ pub struct Reply {
     pub out: Vec<u8>,
     pub err: Option<String>,
 }
+
+// The socket transport is currently only used by the TUI's server; gate it on
+// the `tui` feature so a headless build compiles no unused socket code. Phase 4
+// will relax the shared bits (`sock_path_for`, framing) for the always-on
+// client.
+#[cfg(all(unix, feature = "tui"))]
+pub use unix::{bind, reply, sock_path_for, try_accept};
+
+/// Length-prefixed JSON framing (`u32` LE length + body). One frame per
+/// direction, one exchange per connection.
+#[cfg(all(unix, feature = "tui"))]
+mod frame {
+    use std::io::{Read, Write};
+
+    use anyhow::Context as _;
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
+
+    pub(super) fn write<W: Write, T: Serialize>(mut w: W, msg: &T) -> anyhow::Result<()> {
+        let bytes = serde_json::to_vec(msg)?;
+        let len = u32::try_from(bytes.len()).context("ipc frame too large")?;
+        w.write_all(&len.to_le_bytes())?;
+        w.write_all(&bytes)?;
+        w.flush()?;
+        Ok(())
+    }
+
+    pub(super) fn read<R: Read, T: DeserializeOwned>(mut r: R) -> anyhow::Result<T> {
+        let mut len = [0u8; 4];
+        r.read_exact(&mut len)?;
+        let mut buf = vec![0u8; u32::from_le_bytes(len) as usize];
+        r.read_exact(&mut buf)?;
+        Ok(serde_json::from_slice(&buf)?)
+    }
+}
+
+#[cfg(all(unix, feature = "tui"))]
+mod unix {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    use anyhow::Context as _;
+
+    use super::{Reply, Request, frame};
+
+    /// The IPC socket sits next to the db file, e.g. `.tda/tda.sock`.
+    #[must_use]
+    pub fn sock_path_for(db: &Path) -> PathBuf {
+        db.with_file_name("tda.sock")
+    }
+
+    /// Bind the server socket, clearing any stale file left by a crashed
+    /// server. Non-blocking so the TUI can poll it between terminal events.
+    pub fn bind(sock: &Path) -> anyhow::Result<UnixListener> {
+        let _ = std::fs::remove_file(sock);
+        let listener =
+            UnixListener::bind(sock).with_context(|| format!("bind {}", sock.display()))?;
+        listener.set_nonblocking(true)?;
+        Ok(listener)
+    }
+
+    /// Accept one pending connection and read its request, if any is waiting.
+    /// Returns `None` when nothing is pending, or when a client misbehaves — a
+    /// slow or malformed client is dropped rather than stalling the TUI.
+    // ponytail: reads the request frame on the UI thread with a short timeout;
+    // fine for a local single-user socket. Move to a task if it ever matters.
+    pub fn try_accept(listener: &UnixListener) -> Option<(UnixStream, Request)> {
+        let (mut stream, _) = listener.accept().ok()?;
+        stream.set_nonblocking(false).ok()?;
+        stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+        let req = frame::read(&mut stream).ok()?;
+        Some((stream, req))
+    }
+
+    /// Send the reply back to a client obtained from [`try_accept`].
+    pub fn reply(mut stream: UnixStream, reply: &Reply) -> anyhow::Result<()> {
+        frame::write(&mut stream, reply)
+    }
+}
+
+#[cfg(all(test, unix, feature = "tui"))]
+mod tests {
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    use super::{Reply, Request, bind, frame, reply, try_accept};
+    use crate::command::Cmd;
+
+    /// Drive the non-blocking listener until a client connects or we give up.
+    fn accept_within(listener: &std::os::unix::net::UnixListener) -> Option<(UnixStream, Request)> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Some(pair) = try_accept(listener) {
+                return Some(pair);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    #[test]
+    fn round_trips_a_request_and_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("tda.sock");
+        let listener = bind(&sock).unwrap();
+
+        let sock2 = sock.clone();
+        let client = std::thread::spawn(move || {
+            let mut stream = UnixStream::connect(&sock2).unwrap();
+            let req = Request {
+                cmd: Cmd::Ls {
+                    id: None,
+                    tree: false,
+                },
+                cwd: "/tmp".into(),
+                stdin: vec![],
+            };
+            frame::write(&mut stream, &req).unwrap();
+            let reply: Reply = frame::read(&mut stream).unwrap();
+            reply
+        });
+
+        let (stream, got) = accept_within(&listener).expect("no client connected");
+        assert!(matches!(got.cmd, Cmd::Ls { .. }));
+        assert_eq!(got.cwd, std::path::Path::new("/tmp"));
+        reply(
+            stream,
+            &Reply {
+                out: b"hello".to_vec(),
+                err: None,
+            },
+        )
+        .unwrap();
+
+        let got_reply = client.join().unwrap();
+        assert_eq!(got_reply.out, b"hello");
+        assert_eq!(got_reply.err, None);
+    }
+
+    #[test]
+    fn drops_a_client_that_sends_no_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("tda.sock");
+        let listener = bind(&sock).unwrap();
+
+        // Connect and immediately hang up without sending a request frame.
+        let sock2 = sock.clone();
+        std::thread::spawn(move || {
+            let _ = UnixStream::connect(&sock2).unwrap();
+        })
+        .join()
+        .unwrap();
+
+        // The half-open/closed connection must be dropped, not surfaced as a
+        // command (read of the length prefix hits EOF).
+        assert!(try_accept(&listener).is_none());
+    }
+}
