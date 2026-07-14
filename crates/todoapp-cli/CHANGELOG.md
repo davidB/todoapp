@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0] - 2026-07-14
+
+### Documentation
+
+- Document concurrent CLI/TUI, agent identity, and skill install ([eec7837](https://github.com/davidB/todoapp/commit/eec78378d3e22a37a4b80c42476800d72bb59f9d))
+
+### Features
+
+- Shorten ancestor breadcrumb titles to first line ([a9535f2](https://github.com/davidB/todoapp/commit/a9535f20ed6cc74b41535289cb838cb5db8efe27))
+- Non-modal live details pane, toggled with `v` ([861804e](https://github.com/davidB/todoapp/commit/861804e6cdcc414e97609575df853bd7d0b56c18))
+- Proxy CLI commands to a running TUI over the socket ([ddbd4fe](https://github.com/davidB/todoapp/commit/ddbd4fe6f9c7839d1ff953fa3773e6e7c06c0aa7))
+- TUI serves CLI commands over a Unix socket ([315bde1](https://github.com/davidB/todoapp/commit/315bde165c6f88a0e84f8f8f63229f98a8195d9f))
+
+### Refactoring
+
+- Share breadcrumb rendering between list view and details pane ([6eb6a6a](https://github.com/davidB/todoapp/commit/6eb6a6a220520df3d7a73225ac6aa9aa4a077ab4))
+- Breadcrumb crumbs reuse render_inline (DRY) ([3b28516](https://github.com/davidB/todoapp/commit/3b2851660d0f4aef16c095de2850072787c286c1))
+- Extract Cmd + run_command into command.rs, add ipc wire types ([f6342d5](https://github.com/davidB/todoapp/commit/f6342d5c656b46a0e9ac9c32820e1903b21846e4))
+- Merge todoapp-tui crate into todoapp-cli behind `tui` feature ([72d03ae](https://github.com/davidB/todoapp/commit/72d03ae4e8a0b769554de00c9dae8a45b3c6d7b4))
+
+
 ## [0.4.1] - 2026-07-14
 
 ### Bug Fixes
