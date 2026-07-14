@@ -6,7 +6,15 @@ custom_minor_increment_regex = "^minor|^enhancement|^🎉"
 features_always_increment_minor = true
 git_release_enable = false # cargo-dist creates the GitHub Release from the tag
 git_release_name = "{{ version }}"
-git_tag_enable = true
+# Lockstep single tag for cargo-dist: only one crate owns the tag (see [[package]]),
+# otherwise every publishable crate tries to create the same "{{ version }}" tag and
+# the 2nd+ fails with GitHub 422 "Reference already exists".
+git_tag_enable = false
 git_tag_name = "{{ version }}"
 publish = true
-semver_check = false # TODO enable when the lib will be used out of this cli (=> increase CI time)git_release_enable = false # the release is build by the (cargo-)dist from tag
+semver_check = false # TODO enable when the lib will be used out of this cli (=> increase CI time)
+
+# The single crate that creates the workspace-wide tag cargo-dist releases from.
+[[package]]
+name = "todoapp-cli"
+git_tag_enable = true
