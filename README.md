@@ -118,6 +118,7 @@ tda                             # or: tda tui
 | `alt+→` / `alt+←` | reparent in / out |
 | `/` | text search |
 | `n` | jump to "what next" |
+| `v` | toggle live details pane (non-modal, follows the cursor) |
 | `y` | yank (copy) title to clipboard |
 | `enter` | view detail |
 | `?` | toggle help |
@@ -125,6 +126,14 @@ tda                             # or: tda tui
 
 Data is stored via the [Turso](https://turso.tech/) adapter in the
 OS-standard data dir (e.g. `~/.local/share/tda/tda.db` on Linux).
+
+**Concurrent CLI while the TUI is open.** Turso takes an exclusive
+cross-process lock on the db, so normally only one process can open it. To let
+you (or an agent) keep using the `tda` CLI while a TUI is running, the TUI owns
+the db and listens on a Unix socket next to it (`tda.sock`); any other `tda`
+command transparently forwards itself to that socket, runs in-process, and the
+TUI rebuilds so external writes appear live. No server to start, nothing to
+configure — with no TUI running, `tda` just opens the db directly.
 
 ### Configuration
 
@@ -138,7 +147,7 @@ its embedded default:
 | `~/.config/tda/config.toml` | Cross-app (CLI + TUI) | `[workspaces]` — per-machine local-path overrides for `tda ws init` bindings, keyed by workspace name |
 
 `tui.toml`'s default, used as the template to copy from, lives at
-[`crates/todoapp-tui/tui.default.toml`](crates/todoapp-tui/tui.default.toml).
+[`crates/todoapp-cli/src/tui.default.toml`](crates/todoapp-cli/src/tui.default.toml).
 
 The `tda` binary can also be driven non-interactively for scripting and
 agents:
@@ -164,9 +173,21 @@ mind from the start, not bolted on:
   `tda next --claimable --here` (find work for the current repo), `tda claim`,
   `tda context` (prompt-ready Markdown brief with ancestor notes and the
   workspace folder), `tda note` (append-only progress log), `tda show`.
-  [`skills/tda/SKILL.md`](skills/tda/SKILL.md) documents the whole workflow —
-  drop it into `.claude/skills/tda/` (Claude Code) or quote it in your
-  AGENTS.md.
+  [`skills/tda/SKILL.md`](skills/tda/SKILL.md) documents the whole workflow
+  (with a full command reference in
+  [`skills/tda/reference/cli.md`](skills/tda/reference/cli.md)). Install it into
+  the current project with:
+
+  ```sh
+  bunx skills add https://github.com/davidB/todoapp --skill tda
+  ```
+
+  or copy the `skills/tda/` folder into `.claude/skills/` (Claude Code) by hand,
+  or quote it in your AGENTS.md.
+- **Runs alongside a human's TUI**: an agent can keep shelling out to `tda`
+  while someone has the TUI open — commands forward over a Unix socket to the
+  running TUI, which applies them and refreshes live (see [TUI](#tui) above), so
+  human and agent share one store without stepping on the db lock.
 - **Workspaces**: `tda ws init` binds a task subtree to a repo/folder, so
   agents can scope searches to the current project and `cd` to a task's code.
 - **Planned** ([`tda-spec.md` §10](tda-spec.md#10-roadmap), milestone M5): an
@@ -175,14 +196,15 @@ mind from the start, not bolted on:
 
 ## Status / Roadmap
 
-Pre-release (`0.0.0`, not yet published). Current state, per
-[`tda-spec.md` §10](tda-spec.md#10-roadmap):
+Early releases published to [crates.io](https://crates.io/crates/todoapp-cli).
+Current state, per [`tda-spec.md` §10](tda-spec.md#10-roadmap):
 
 - ✅ **M0** — workspace skeleton, CI gates.
 - ✅ **M1** — domain core, in-memory store, decider machinery, full test coverage.
 - ✅ **M2** — Turso persistence adapter, shared conformance suite.
-- 🚧 **M4** — TUI (in progress, delivered ahead of M3 by design).
-- ⏳ **M3** — CLI dogfood milestone (`tda` self-hosts `tda-spec.md` as its own task tree).
+- ✅ **M4** — TUI (delivered ahead of M3 by design), with a scriptable JSON CLI
+  that runs concurrently against a live TUI over a Unix socket.
+- 🚧 **M3** — CLI dogfood milestone (`tda` self-hosts `tda-spec.md` as its own task tree).
 - ⏳ **M5** — HTTP API + MCP server for agents.
 - ⏳ **M6** — templates, richer dependency views, aggregation caching, GUI.
 
@@ -198,8 +220,8 @@ Hexagonal: `adapters → app → core`, enforced by `mise run lint`. Nothing in
 | [`todoapp-store-mem`](crates/todoapp-store-mem) | Adapter: in-memory store for tests/dev. |
 | [`todoapp-store-turso`](crates/todoapp-store-turso) | Adapter: Turso/SQLite persistence. |
 | [`todoapp-conformance`](crates/todoapp-conformance) | Shared port-conformance suite, run against every store. |
-| [`todoapp-tui`](crates/todoapp-tui) | Adapter: the ratatui TUI (library, consumed by `todoapp-cli`). |
-| [`todoapp-cli`](crates/todoapp-cli) | Adapter: the `tda` binary — CLI + launches the TUI. |
+| [`todoapp-config`](crates/todoapp-config) | Config path resolution + TOML parsing, shared by CLI and TUI. |
+| [`todoapp-cli`](crates/todoapp-cli) | Adapter: the `tda` binary — CLI plus the ratatui TUI, behind a default-on `tui` feature. |
 
 See [`tda-spec.md` §5](tda-spec.md#5-architecture) for the full rationale,
 including the planned `todoapp-api`/`todoapp-mcp`/`todoapp-ui-core` adapters.

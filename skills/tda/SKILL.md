@@ -7,13 +7,28 @@ description: Work tasks from the tda task manager as an AI agent — find a clai
 
 `tda` is a keyboard-first task manager with a JSON CLI. Every command prints
 JSON (except `context`, which prints Markdown). IDs are ULIDs; short unique
-prefixes are accepted in the TUI, but pass full ids from JSON output.
+prefixes are accepted in the TUI, but pass full ids from JSON output. Full
+command + flag reference: [`reference/cli.md`](reference/cli.md) — read it when
+you need a flag you don't remember.
 
-## Your identity
+The CLI is safe to run while a human has the TUI open: the TUI owns the db and
+serves your commands over a socket, so your writes show up live in their view.
+See "Concurrency" in [`reference/cli.md`](reference/cli.md).
 
-Use one actor id per harness+model, shaped `<harness>/<model>`, e.g.
-`claude-code/fable-5` or `opencode/gpt-5`. Users assign work to you with
-`tda assign <id> <actor>`; an unassigned `todo` task is claimable by anyone.
+## Your identity (whoami)
+
+You act under one actor id, shaped `<harness>/<model>`, e.g.
+`claude-code/opus-4-8` or `opencode/gpt-5`. Pick it once from your own
+harness + model and reuse it as `<me>` everywhere below. There is no `tda`
+command that knows who you are — the id is yours to supply.
+
+**State it up front.** When you find, claim, assign, or note a task — or when
+the user asks "whoami" / `/tda whoami` — say which actor id you are using, e.g.
+"Acting as `claude-code/opus-4-8`." So the user (and other agents sharing the
+store) can see who did what.
+
+Users assign work to you with `tda assign <id> <actor>`; an unassigned `todo`
+task is claimable by anyone.
 
 ## The work loop
 
