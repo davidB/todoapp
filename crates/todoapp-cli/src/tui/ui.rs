@@ -449,12 +449,15 @@ fn render_detail(f: &mut Frame, area: Rect, app: &AppState) {
     let snap = &pane.snap;
     let mut text = crate::tui::markdown::render(&snap.title);
     if !pane.breadcrumb.is_empty() {
+        let crumbs = pane
+            .breadcrumb
+            .iter()
+            .map(|t| short_title(t))
+            .collect::<Vec<_>>()
+            .join(" / ");
         text.lines.insert(
             0,
-            Line::styled(
-                pane.breadcrumb.join(" / "),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Line::styled(crumbs, Style::default().fg(Color::DarkGray)),
         );
     }
     if let Some(notes) = &snap.notes
@@ -581,6 +584,16 @@ fn detail_field_lines(app: &AppState, pane: &DetailPane) -> Vec<Line<'static>> {
     field("updated", snap.updated_at.0.to_string());
 
     lines
+}
+
+/// A task title's first line, with an ellipsis appended when it has more —
+/// used for ancestor crumbs in the details pane (titles can be multi-line).
+fn short_title(title: &str) -> String {
+    match title.split_once('\n') {
+        Some((first, rest)) if !rest.trim().is_empty() => format!("{first}…"),
+        Some((first, _)) => first.to_string(),
+        None => title.to_string(),
+    }
 }
 
 /// A compact one-line summary of a recurrence rule for the details pane.
