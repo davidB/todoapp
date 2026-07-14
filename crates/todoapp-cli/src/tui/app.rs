@@ -4,47 +4,21 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use todoapp_app::{Anchor, QueryHit, Services};
+use todoapp_app::{Anchor, QueryHit};
 use todoapp_core::{
-    Assignment, Clock, Date, Due, DueSpec, Duration, Filter, Id, IdGenerator, Query, Status,
-    TaskEntityStore, Timestamp, Workspace, shortest_unique_prefixes,
+    Assignment, Clock, Date, Due, DueSpec, Duration, Filter, Id, Query, Status, TaskEntityStore,
+    Workspace, shortest_unique_prefixes,
 };
 use todoapp_store_turso::TursoStore;
 use tui_input::{Input, InputRequest};
-use ulid::Ulid;
 
-use crate::clipboard::Clipboard;
-use crate::config::Config;
-use crate::human_duration;
-use crate::keymap::{Action, Keymap};
-use crate::schedule::{project_finish_date, remaining_effort};
-use crate::text_edit;
-
-// ---- Clock & IdGenerator ----------------------------------------------------
-
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> Timestamp {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        #[allow(clippy::cast_possible_truncation)]
-        Timestamp::from_millisecond(ms as i64)
-    }
-    fn today(&self) -> Date {
-        Date(jiff::Zoned::now().date())
-    }
-}
-
-pub struct UlidGen;
-
-impl IdGenerator for UlidGen {
-    fn next_id(&self) -> Id {
-        Id::new(Ulid::new().to_string().to_lowercase())
-    }
-}
+use crate::svc::{SystemClock, UlidGen, make_svc};
+use crate::tui::clipboard::Clipboard;
+use crate::tui::config::Config;
+use crate::tui::human_duration;
+use crate::tui::keymap::{Action, Keymap};
+use crate::tui::schedule::{project_finish_date, remaining_effort};
+use crate::tui::text_edit;
 
 // ---- View types -------------------------------------------------------------
 
@@ -242,24 +216,6 @@ pub struct AppState {
     /// Animation state for the `wip` status spinner, advanced once per redraw.
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub clipboard: Box<dyn Clipboard>,
-}
-
-/// Build a `Services` bundle from individual field references so the borrow
-/// checker can see exactly which fields are in use (field-level disjoint borrows).
-pub fn make_svc<'a>(
-    store: &'a TursoStore,
-    clock: &'a SystemClock,
-    ids: &'a UlidGen,
-) -> Services<'a, TursoStore> {
-    Services {
-        store,
-        links: store,
-        collections: store,
-        query: store,
-        clock,
-        ids,
-        blobs: store,
-    }
 }
 
 /// Rebuild the flat visible-item list by DFS over the tree.
@@ -1572,7 +1528,7 @@ pub(crate) mod tests {
             TursoStore::open_memory().await,
             Keymap::load(None).unwrap(),
             Config::load(None).unwrap(),
-            Box::new(crate::clipboard::FakeClipboard::default()),
+            Box::new(crate::tui::clipboard::FakeClipboard::default()),
         )
         .await
         .unwrap()
@@ -1737,7 +1693,7 @@ pub(crate) mod tests {
             TursoStore::open_memory().await,
             Keymap::load(keymap_toml.as_ref()).unwrap(),
             Config::load(config_toml.as_ref()).unwrap(),
-            Box::new(crate::clipboard::FakeClipboard::default()),
+            Box::new(crate::tui::clipboard::FakeClipboard::default()),
         )
         .await
         .unwrap()

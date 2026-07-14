@@ -3791,15 +3791,24 @@ name = "todoapp-cli"
 version = "0.4.1"
 dependencies = [
  "anyhow",
+ "arboard",
+ "base64",
  "clap",
+ "crossterm",
  "jiff",
+ "ratatui",
  "serde",
  "serde_json",
+ "throbber-widgets-tui",
  "todoapp-app",
  "todoapp-config",
  "todoapp-core",
- "todoapp-tui",
+ "todoapp-store-turso",
  "tokio",
+ "toml",
+ "tui-input",
+ "tui-markdown",
+ "ulid",
 ]
 
 [[package]]
@@ -3854,29 +3863,6 @@ dependencies = [
  "serde_json",
  "todoapp-core",
  "turso",
-]
-
-[[package]]
-name = "todoapp-tui"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "arboard",
- "base64",
- "crossterm",
- "jiff",
- "ratatui",
- "serde",
- "throbber-widgets-tui",
- "todoapp-app",
- "todoapp-config",
- "todoapp-core",
- "todoapp-store-turso",
- "tokio",
- "toml",
- "tui-input",
- "tui-markdown",
- "ulid",
 ]
 
 [[package]]

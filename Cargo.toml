@@ -18,7 +18,6 @@ todoapp-store-mem = { path = "crates/todoapp-store-mem" }
 todoapp-store-turso = { version = "0.4.1", path = "crates/todoapp-store-turso" }
 todoapp-conformance = { path = "crates/todoapp-conformance" }
 todoapp-config = { version = "0.4.1", path = "crates/todoapp-config" }
-todoapp-tui = { version = "0.4.1", path = "crates/todoapp-tui" }
 # Turso: the async embedded SQLite-compatible engine (spec §6). Beta. Adapter-only.
 turso = "0.7.0-pre.10"
 

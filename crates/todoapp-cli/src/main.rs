@@ -1,8 +1,13 @@
 //! tda CLI (spec §9 / M3): JSON output for agents and scripts. TUI is for humans.
 
+mod svc;
+#[cfg(feature = "tui")]
+mod tui;
+
 use std::io::{self, Read as _, Write as _};
 use std::path::PathBuf;
 
+use crate::svc::{SystemClock, UlidGen, make_svc};
 use anyhow::Context as _;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -11,7 +16,6 @@ use todoapp_core::{
     Clock, ComponentStore, Dir, DueFilter, DueSpec, Filter, Id, Query, Recurrence, SortField,
     SortKey, Status, TaskEntityStore, Workspace,
 };
-use todoapp_tui::{SystemClock, UlidGen, make_svc};
 
 // ---- Output helpers ----------------------------------------------------------
 
@@ -370,7 +374,10 @@ enum DbCmd {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Cmd::Tui = cli.cmd {
-        return todoapp_tui::run(cli.db).await;
+        #[cfg(feature = "tui")]
+        return tui::run(cli.db).await;
+        #[cfg(not(feature = "tui"))]
+        anyhow::bail!("this `tda` was built without the `tui` feature");
     }
     if let Cmd::Db { cmd } = &cli.cmd {
         let cwd = std::env::current_dir().context("current dir")?;

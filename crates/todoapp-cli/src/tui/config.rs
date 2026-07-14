@@ -1,10 +1,10 @@
 //! General TUI config: tree-table column order/visibility + the work
 //! calendar used to project the `eta` column. Same embedded-default +
-//! user-override pattern as [`crate::keymap`]: an optional user file at
+//! user-override pattern as [`crate::tui::keymap`]: an optional user file at
 //! `~/.config/tda/tui.toml` (path + generic TOML parsing via
 //! `todoapp_config::{tui_config_path, read_toml}`) overrides individual
 //! fields; unmentioned fields keep their embedded defaults. Shares the file
-//! with `[keybindings]` (see [`crate::keymap`]) — this module only reads the
+//! with `[keybindings]` (see [`crate::tui::keymap`]) — this module only reads the
 //! `columns`/`schedule`/`status`/`styles`/`behavior` tables and ignores the
 //! rest.
 
@@ -242,7 +242,7 @@ impl Config {
     /// embedded default. `user` is the already-parsed `[columns]`/
     /// `[schedule]`/`[status]`/`[styles]`/`[behavior]` tables of `tui.toml`
     /// (see `todoapp_config::read_toml`); this module only reads those and
-    /// ignores `[keybindings]` (see [`crate::keymap`]).
+    /// ignores `[keybindings]` (see [`crate::tui::keymap`]).
     #[allow(clippy::too_many_lines, clippy::similar_names)]
     pub fn load(user: Option<&toml::Value>) -> anyhow::Result<Self> {
         let default: RawConfig =

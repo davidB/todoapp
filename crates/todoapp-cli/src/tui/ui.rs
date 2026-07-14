@@ -14,13 +14,13 @@ use ratatui::{
 };
 use todoapp_core::Status;
 
-use crate::app::{
+use crate::tui::app::{
     AppState, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View, VisibleItem,
     WsEditor, WsPicker,
 };
-use crate::config::{ColumnKind, Config, Semantic};
-use crate::keymap::{Action, Keymap};
-use crate::text_edit;
+use crate::tui::config::{ColumnKind, Config, Semantic};
+use crate::tui::keymap::{Action, Keymap};
+use crate::tui::text_edit;
 
 pub fn render(f: &mut Frame, app: &AppState) {
     let area = f.area();
@@ -180,7 +180,7 @@ fn tree_cell_line(
     let title_base = title_style(item, app);
     let title_spans = match (is_cursor, app.selection) {
         (true, Some(sel)) => selection_spans(&item.title, title_width, sel),
-        _ => crate::markdown::render_inline(&item.title, title_width),
+        _ => crate::tui::markdown::render_inline(&item.title, title_width),
     };
     spans.extend(
         title_spans
@@ -246,7 +246,7 @@ fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'
         } else {
             item.assignees.clone()
         }),
-        ColumnKind::Estimate => Cell::from(crate::human_duration::format(
+        ColumnKind::Estimate => Cell::from(crate::tui::human_duration::format(
             item.estimate,
             app.config.hours_per_day,
             app.config.days_per_week,
@@ -401,7 +401,7 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
             let title_base = app.config.style_for(Semantic::Text(hit.task.status));
             let title_spans = match (i == app.cursor, app.selection) {
                 (true, Some(sel)) => selection_spans(&hit.task.title, title_width, sel),
-                _ => crate::markdown::render_inline(&hit.task.title, title_width),
+                _ => crate::tui::markdown::render_inline(&hit.task.title, title_width),
             };
             spans.extend(
                 title_spans
@@ -423,10 +423,10 @@ fn render_list(f: &mut Frame, area: Rect, app: &AppState, hits: &[todoapp_app::Q
 /// `Action::ViewDetail`. `q`/`esc` (the generic `Action::Quit` back-out)
 /// returns to the tree.
 fn render_detail(f: &mut Frame, area: Rect, title: &str, notes: &str) {
-    let mut text = crate::markdown::render(title);
+    let mut text = crate::tui::markdown::render(title);
     if !notes.is_empty() {
         text.lines.push(Line::raw(""));
-        text.lines.extend(crate::markdown::render(notes).lines);
+        text.lines.extend(crate::tui::markdown::render(notes).lines);
     }
     let p = Paragraph::new(text)
         .block(
@@ -564,10 +564,10 @@ fn multiline_layout(
 /// other fields are one line each with their own horizontal scroll.
 /// Tab/Shift+Tab cycles focus; the id field is read-only (never gets a
 /// cursor).
-fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::app::TaskEditForm) {
+fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::tui::app::TaskEditForm) {
     let inner_width = text_edit::dialog_wrap_width(area.width);
 
-    let single_line_count = crate::app::EDIT_FORM_LABELS.len() - 2; // all but title/notes
+    let single_line_count = crate::tui::app::EDIT_FORM_LABELS.len() - 2; // all but title/notes
     let multiline_visible_total: usize = [TITLE_FIELD, NOTES_FIELD]
         .iter()
         .map(|&i| multiline_layout(&form.fields[i], inner_width).1)
@@ -579,7 +579,7 @@ fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::app::TaskEditForm) 
     let mut lines: Vec<Line> = Vec::new();
     let mut cursor_pos: Option<(u16, u16)> = None;
 
-    for (i, label) in crate::app::EDIT_FORM_LABELS.iter().enumerate() {
+    for (i, label) in crate::tui::app::EDIT_FORM_LABELS.iter().enumerate() {
         let focused = i == form.focus;
         if i == TITLE_FIELD || i == NOTES_FIELD {
             let (rows, visible, top, cursor_row, cursor_col) =
@@ -798,8 +798,8 @@ mod tests {
     use todoapp_core::{Date, Duration, Id, Status};
 
     use super::*;
-    use crate::app::make_svc;
-    use crate::app::tests::new_app as new_test_app;
+    use crate::svc::make_svc;
+    use crate::tui::app::tests::new_app as new_test_app;
 
     /// Renders `app` to a 130x10 test buffer.
     fn render_to_buffer(app: &AppState) -> ratatui::buffer::Buffer {
@@ -855,7 +855,7 @@ mod tests {
     #[tokio::test]
     async fn help_popup_documents_title_syntax() {
         let mut app = new_test_app().await;
-        app.view = crate::app::View::Help;
+        app.view = crate::tui::app::View::Help;
 
         // Tall enough to fit every keybinding row plus the title-syntax hints
         // appended after them (the popup's height is capped to the terminal's).
@@ -885,7 +885,7 @@ mod tests {
             .unwrap();
         app.rebuild().await;
         app.cursor = 0;
-        app.selection = Some(crate::app::Selection {
+        app.selection = Some(crate::tui::app::Selection {
             anchor: 0,
             cursor: 4,
         });

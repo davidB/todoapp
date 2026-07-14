@@ -15,11 +15,10 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use todoapp_config::{open_store, read_toml, tui_config_path};
 
-use crate::app::AppState;
-pub use crate::app::{SystemClock, UlidGen, make_svc};
-use crate::clipboard::{Clipboard, SystemClipboard};
-use crate::config::Config;
-use crate::keymap::Keymap;
+use self::app::AppState;
+use self::clipboard::{Clipboard, SystemClipboard};
+use self::config::Config;
+use self::keymap::Keymap;
 
 fn load_tui_config() -> anyhow::Result<(Config, Keymap)> {
     let user = read_toml(&tui_config_path());

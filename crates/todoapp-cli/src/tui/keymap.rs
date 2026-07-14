@@ -5,7 +5,7 @@
 //! optional user file at `~/.config/tda/tui.toml` (path + generic TOML
 //! parsing via `todoapp_config::{tui_config_path, read_toml}`) overrides
 //! individual actions. Same embedded-default + user-override pattern as
-//! [`crate::config`].
+//! [`crate::tui::config`].
 
 use std::collections::HashMap;
 
@@ -229,7 +229,7 @@ impl Keymap {
     /// named action replaces its whole key list; unmentioned actions keep
     /// their default keys. `user` is the already-parsed `tui.toml` (see
     /// `todoapp_config::read_toml`); this module only reads `[keybindings]`
-    /// and ignores the rest (see [`crate::config`]).
+    /// and ignores the rest (see [`crate::tui::config`]).
     pub fn load(user: Option<&toml::Value>) -> anyhow::Result<Self> {
         let default: RawKeymapDoc =
             toml::from_str(DEFAULT_KEYMAP_TOML).context("parse embedded default keymap")?;

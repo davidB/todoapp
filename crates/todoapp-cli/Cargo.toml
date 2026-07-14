@@ -18,10 +18,25 @@ path = "src/main.rs"
 [package.metadata.dist]
 dist = true
 
+[features]
+default = ["tui"]
+# The interactive TUI (`tda tui`) and, with it, the IPC server other `tda`
+# invocations proxy to. Without it, `tda` is a headless CLI with no ratatui deps.
+tui = [
+    "dep:crossterm",
+    "dep:ratatui",
+    "dep:throbber-widgets-tui",
+    "dep:tui-markdown",
+    "dep:tui-input",
+    "dep:arboard",
+    "dep:base64",
+    "dep:toml",
+]
+
 [dependencies]
 todoapp-core = { workspace = true }
 todoapp-app = { workspace = true }
-todoapp-tui = { workspace = true }
+todoapp-store-turso = { workspace = true }
 todoapp-config = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -29,6 +44,17 @@ jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+ulid = { workspace = true }
+
+# TUI-only (behind the `tui` feature).
+crossterm = { workspace = true, optional = true }
+ratatui = { workspace = true, optional = true }
+throbber-widgets-tui = { version = "0.11", default-features = false, optional = true }
+tui-markdown = { version = "0.3.8", default-features = false, optional = true }
+tui-input = { workspace = true, optional = true }
+arboard = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 
 [lints]
 workspace = true
