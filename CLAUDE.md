@@ -16,16 +16,32 @@ crates/
   todoapp-store-mem/   # adapter: in-memory store (per-capability component maps), tests + dev
   todoapp-store-turso/ # adapter: Turso/SQLite persistence (M2)
   todoapp-conformance/ # shared conformance test suite (macro runs against both stores)
-  todoapp-tui/         # adapter: ratatui TUI binary `tda` (M4) — DB via resolve_db_path (see below)
+  todoapp-cli/         # adapter: the `tda` binary — CLI, plus the ratatui TUI
+                       #   behind a default-on `tui` feature (its own `tui`
+                       #   module). DB via resolve_db_path (see below).
 ```
-Later adapters (per §5): `todoapp-cli`, `todoapp-api`, `todoapp-mcp`, `todoapp-ui-core`.
+Later adapters (per §5): `todoapp-api`, `todoapp-mcp`, `todoapp-ui-core`.
 
-### todoapp-tui conventions (M4)
+### todoapp-cli / TUI conventions (M4)
+- The TUI lives in `todoapp-cli/src/tui/` behind the `tui` cargo feature
+  (ratatui/crossterm/etc. are optional); `--no-default-features` builds a
+  headless CLI. Command dispatch is `command::run_command(&svc, &req) -> Reply`
+  (writes output to a buffer), shared by the direct CLI path and the TUI server.
+- **Concurrent access (single-writer socket).** turso takes an exclusive
+  cross-process db lock, so while `tda tui` runs it is the only process that can
+  open the db. It binds a Unix socket next to the db file (`tda.sock`) and, once
+  per terminal-poll cycle, drains pending connections: runs the sent command
+  in-process and `rebuild()`s so external changes show live. Other `tda`
+  invocations send their command to that socket (`ipc::send`); with no server
+  (or connection refused) they open the db directly. Transport is in
+  `todoapp-cli/src/ipc.rs` (unix; server bits gated on `tui`).
 - `AppState` owns `TursoStore`; `make_svc(store, clock, ids)` builds `Services` from
   individual field references (field-level borrows, no `Box::leak`).
 - `build_visible_items(store, clock, ids, expanded)` is a free async fn for tree rebuild;
   the caller assigns the result to `self.items` after borrows are released.
-- `SystemClock` (chrono `Local::now`) + `UlidGen` (ulid crate) are the real impls.
+- `SystemClock` (`SystemTime` + jiff) + `UlidGen` (ulid crate) are the real
+  impls, in `todoapp-cli/src/svc.rs` (always compiled — the headless CLI needs
+  them without ratatui), alongside `make_svc`.
 - DB path (`resolve_db_path`, shared by CLI + TUI): `--db` flag > nearest
   ancestor `.tda/tda.db` (created by `tda db init`, git-style walk from cwd)
   > OS-standard data dir, e.g. `~/.local/share/tda/tda.db` on Linux.
@@ -35,7 +51,7 @@ Later adapters (per §5): `todoapp-cli`, `todoapp-api`, `todoapp-mcp`, `todoapp-
   typed schemas stay with their owning crate: `config.toml` for cross-app
   settings shared with the CLI (currently just `[workspaces]`), `tui.toml`
   for TUI-only settings (columns/schedule/status/styles/keybindings/behavior,
-  parsed into `todoapp-tui`'s `Config`/`Keymap` via `serde::Deserialize` over
+  parsed into the `tui` module's `Config`/`Keymap` via `serde::Deserialize` over
   the shared `toml::Value`). No env var overrides (dropped as YAGNI).
 - Actor for claim: fixed `Id("me")` — single-user, no auth (spec §2/§13 Q5).
 

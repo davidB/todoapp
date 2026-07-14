@@ -29,16 +29,17 @@ pub struct Reply {
     pub err: Option<String>,
 }
 
-// The socket transport is currently only used by the TUI's server; gate it on
-// the `tui` feature so a headless build compiles no unused socket code. Phase 4
-// will relax the shared bits (`sock_path_for`, framing) for the always-on
-// client.
+// Client side (`send`, `sock_path_for`) is always available so a headless
+// `tda` can reach a running TUI. The server side (`bind`/`try_accept`/`reply`)
+// only exists in `tui` builds.
 #[cfg(all(unix, feature = "tui"))]
-pub use unix::{bind, reply, sock_path_for, try_accept};
+pub use unix::{bind, reply, try_accept};
+#[cfg(unix)]
+pub use unix::{send, sock_path_for};
 
 /// Length-prefixed JSON framing (`u32` LE length + body). One frame per
 /// direction, one exchange per connection.
-#[cfg(all(unix, feature = "tui"))]
+#[cfg(unix)]
 mod frame {
     use std::io::{Read, Write};
 
@@ -64,15 +65,21 @@ mod frame {
     }
 }
 
-#[cfg(all(unix, feature = "tui"))]
+#[cfg(unix)]
 mod unix {
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::io::ErrorKind;
+    #[cfg(feature = "tui")]
+    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
+    #[cfg(feature = "tui")]
     use std::time::Duration;
 
     use anyhow::Context as _;
 
-    use super::{Reply, Request, frame};
+    #[cfg(feature = "tui")]
+    use super::Reply;
+    use super::{Request, frame};
 
     /// The IPC socket sits next to the db file, e.g. `.tda/tda.sock`.
     #[must_use]
@@ -80,8 +87,28 @@ mod unix {
         db.with_file_name("tda.sock")
     }
 
+    /// Send a command to a running TUI server and wait for its reply.
+    ///
+    /// `Ok(None)` means no server is listening (socket missing or refused) — the
+    /// caller should run the command directly. `Ok(Some(_))` is the server's
+    /// reply. `Err` means the server was reachable but the exchange failed; the
+    /// caller must NOT fall back to the db (the server holds its lock).
+    pub fn send(sock: &Path, req: &Request) -> anyhow::Result<Option<super::Reply>> {
+        let mut stream = match UnixStream::connect(sock) {
+            Ok(s) => s,
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+                return Ok(None);
+            }
+            Err(e) => return Err(e).context("connect to tda server"),
+        };
+        frame::write(&mut stream, req).context("send request to tda server")?;
+        let reply = frame::read(&mut stream).context("read reply from tda server")?;
+        Ok(Some(reply))
+    }
+
     /// Bind the server socket, clearing any stale file left by a crashed
     /// server. Non-blocking so the TUI can poll it between terminal events.
+    #[cfg(feature = "tui")]
     pub fn bind(sock: &Path) -> anyhow::Result<UnixListener> {
         let _ = std::fs::remove_file(sock);
         let listener =
@@ -95,6 +122,7 @@ mod unix {
     /// slow or malformed client is dropped rather than stalling the TUI.
     // ponytail: reads the request frame on the UI thread with a short timeout;
     // fine for a local single-user socket. Move to a task if it ever matters.
+    #[cfg(feature = "tui")]
     pub fn try_accept(listener: &UnixListener) -> Option<(UnixStream, Request)> {
         let (mut stream, _) = listener.accept().ok()?;
         stream.set_nonblocking(false).ok()?;
@@ -104,6 +132,7 @@ mod unix {
     }
 
     /// Send the reply back to a client obtained from [`try_accept`].
+    #[cfg(feature = "tui")]
     pub fn reply(mut stream: UnixStream, reply: &Reply) -> anyhow::Result<()> {
         frame::write(&mut stream, reply)
     }

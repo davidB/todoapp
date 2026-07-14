@@ -79,11 +79,21 @@ async fn main() -> anyhow::Result<()> {
     };
     let req = Request {
         cmd: cli.cmd,
-        cwd,
+        cwd: cwd.clone(),
         stdin,
     };
 
-    // Direct path (Phase 4 will first try a running TUI server over the socket).
+    // If a `tda tui` is running on this db it holds the exclusive lock, so we
+    // can't open the file — send the command to it over the socket instead. No
+    // server (or a non-unix build) falls through to opening the db directly.
+    #[cfg(unix)]
+    {
+        let sock = ipc::sock_path_for(&todoapp_config::resolve_db_path(&cwd, cli.db.clone()));
+        if let Some(reply) = ipc::send(&sock, &req)? {
+            return emit(reply);
+        }
+    }
+
     let store = todoapp_config::open_store(cli.db).await?;
     let clock = SystemClock;
     let ids = UlidGen;
