@@ -2,8 +2,8 @@
 
 The keyboard-first [ratatui](https://ratatui.rs/) TUI for `tda` — a **library
 crate**, not a standalone binary. It's consumed by the `tda` binary in
-[`todoapp-cli`](../todoapp-cli), which wires it to a real store, clock, and id
-generator and launches it via `tda tui` (or by default).
+`todoapp-cli`, which wires it to a real store, clock, and id generator and
+launches it via `tda tui` (or by default).
 
 Key building blocks:
 - `make_svc(store, clock, ids)` — builds a `Services` handle from individual
@@ -14,8 +14,10 @@ Key building blocks:
 - `SystemClock` / `UlidGen` — the real `Clock`/`IdGenerator` impls (test code
   elsewhere injects fakes instead).
 - `keymap.rs` — the action ↔ keybinding table (see the cheat-sheet in the
-  [root README](../../README.md#tui)); `config.rs` and `keymap.rs` both load
-  their tables from the same `tui.toml` (see [`tui.default.toml`](tui.default.toml)).
+  [root README](https://github.com/davidB/todoapp#tui)); `config.rs` and
+  `keymap.rs` both load their tables from the same `tui.toml`.
 
-For a screenshot and the full keybinding list, see the
-[root README](../../README.md).
+To install and run `tda` (the screenshot and full keybinding list live
+there), get [`todoapp-cli`](https://crates.io/crates/todoapp-cli)
+(`cargo install todoapp-cli`) — full docs at the
+[project repo](https://github.com/davidB/todoapp).

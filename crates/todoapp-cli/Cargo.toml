@@ -6,7 +6,10 @@ publish.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Keyboard-free CLI for tda (M3) — JSON output for agents and scripts"
+readme.workspace = true
+description = "Keyboard-first CLI + TUI for tda — capture, organize, and refine tasks, for humans and AI agents"
+keywords = ["todo", "cli", "tui"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "tda"

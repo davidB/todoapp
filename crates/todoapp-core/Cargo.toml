@@ -1,6 +1,6 @@
 [package]
 name = "todoapp-core"
-description = "tda domain core: entities, capabilities, ports. No I/O deps (see spec §5)."
+description = "Domain core of tda (task manager for humans and AI agents): entities, capabilities, and ports. No I/O deps."
 edition.workspace = true
 version.workspace = true
 publish.workspace = true

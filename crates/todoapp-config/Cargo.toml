@@ -1,6 +1,6 @@
 [package]
 name = "todoapp-config"
-description = "Shared DB path resolution and tda.toml config helpers (CLI + TUI)"
+description = "Shared DB path resolution and config.toml/tui.toml helpers for tda (task manager for humans and AI agents)."
 edition.workspace = true
 version.workspace = true
 publish.workspace = true

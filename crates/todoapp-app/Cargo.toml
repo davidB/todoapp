@@ -1,6 +1,6 @@
 [package]
 name = "todoapp-app"
-description = "tda use cases: orchestrate the core + ports (decide/apply)."
+description = "Use-case layer of tda (task manager for humans and AI agents): async orchestration of the domain core."
 edition.workspace = true
 version.workspace = true
 publish.workspace = true

@@ -4,7 +4,7 @@ edition.workspace = true
 version.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Keyboard-first TUI for tda (M4)"
+description = "Keyboard-first TUI for tda (task manager for humans and AI agents) — the library behind the todoapp-cli binary."
 
 [dependencies]
 todoapp-core = { workspace = true }

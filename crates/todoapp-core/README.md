@@ -8,17 +8,17 @@ executor.
 - Task = a stable identity (id + timestamps) plus a set of *capabilities*
   (`Status`, `Notes`, `Schedule`, `Estimate`, `Tags`, `Assignment`,
   `Recurrence`, `IssueRef`, `Attachments`, `Archived`, `TimeLog`) — composition
-  instead of a fixed field list. See [`tda-spec.md` §3](../../tda-spec.md#3-core-concepts-glossary).
+  instead of a fixed field list. See [`tda-spec.md` §3](https://github.com/davidB/todoapp/blob/main/tda-spec.md#3-core-concepts-glossary).
 - The **decider pattern**: `decide` (capability-keyed guards, first denial
   wins) → `Event`s → `apply` (capability-keyed state changes). See
-  [`tda-spec.md` §5a](../../tda-spec.md#5a-commands-the-decider-pattern).
+  [`tda-spec.md` §5a](https://github.com/davidB/todoapp/blob/main/tda-spec.md#5a-commands-the-decider-pattern).
 - Ports (`ComponentStore`, `TaskEntityStore`, …) are defined here and
   implemented by adapters (`todoapp-store-mem`, `todoapp-store-turso`).
 
 This crate sits at the bottom of the dependency rule:
-`adapters → app → core`. Nothing above may leak into it — this is enforced by
-`mise run lint` (`lint:core-no-io`, a `cargo tree` denylist).
+`adapters → app → core`. Nothing above may leak into it.
 
-See the root [README](../../README.md) and [`tda-spec.md`](../../tda-spec.md)
-for the full picture; [`CLAUDE.md`](../../CLAUDE.md) for contributor
-conventions.
+This is a library crate — it has no binary of its own. To install and run
+`tda`, get [`todoapp-cli`](https://crates.io/crates/todoapp-cli)
+(`cargo install todoapp-cli`). Full docs at the
+[project repo](https://github.com/davidB/todoapp).

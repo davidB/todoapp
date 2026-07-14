@@ -1,6 +1,7 @@
 # tda
 
 [![CI](https://github.com/davidB/todoapp/actions/workflows/ci.yml/badge.svg)](https://github.com/davidB/todoapp/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/todoapp-cli.svg)](https://crates.io/crates/todoapp-cli)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![status: work in progress](https://img.shields.io/badge/status-work%20in%20progress-orange)
 
@@ -58,7 +59,7 @@ requirements list.
 
 ## Screenshot
 
-![tda TUI: a task tree with status bars, due dates, and an ETA column](https://github.com/davidB/todoapp/blob/main/docs/demo.gif)
+![tda TUI: a task tree with status bars, due dates, and an ETA column](https://raw.githubusercontent.com/davidB/todoapp/main/docs/demo.gif)
 
 *Early build of the TUI — tree view with per-task status/progress bars, due
 dates, and ETA projection.*

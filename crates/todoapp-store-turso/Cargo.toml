@@ -1,6 +1,6 @@
 [package]
 name = "todoapp-store-turso"
-description = "tda persistence adapter over Turso (embedded SQLite-compatible), spec §7."
+description = "Persistence adapter for tda (task manager for humans and AI agents), built on Turso (embedded, SQLite-compatible)."
 edition.workspace = true
 version.workspace = true
 publish.workspace = true
