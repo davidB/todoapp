@@ -9,3 +9,6 @@ mise.local.toml
 .envrc
 
 megalinter-reports
+.agents
+.claude
+skills-lock.json
