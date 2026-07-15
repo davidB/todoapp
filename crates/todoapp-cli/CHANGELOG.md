@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0] - 2026-07-15
+
+### Documentation
+
+- Rework the README ([e00a392](https://github.com/davidB/todoapp/commit/e00a39241f7f42cfeea8ba629a53b10ec070f9ec))
+
+### Features
+
+- [**breaking**] Chaining `add task` enabled by default ([92f5983](https://github.com/davidB/todoapp/commit/92f5983b85d7c9c9b6e5efd86ec6fcba6b2593ee))
+- [**breaking**] `tui` becomes the default subcommand (previously `help`) ([72fb15e](https://github.com/davidB/todoapp/commit/72fb15e2a8b58eedccaae28bf71fd7883affc10b))
+
+### Revert
+
+- Chaining `add task` disabled by default ([9abe9ec](https://github.com/davidB/todoapp/commit/9abe9eca214a70faf031601587516a831414a664))
+
+
 ## [0.5.0] - 2026-07-14
 
 ### Documentation
