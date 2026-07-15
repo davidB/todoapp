@@ -5,8 +5,28 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 ![status: work in progress](https://img.shields.io/badge/status-work%20in%20progress-orange)
 
-A keyboard-first tool to capture, organize, and refine tasks — linearly *and*
-as graphs/trees — for both humans and AI agents.
+Capture tasks at typing speed, without leaving the terminal.
+
+Tasks live in a tree, a dependency graph, or a flat list. Local-first: no
+account, no server. Built so a human and an AI agent can work the same backlog.
+
+![tda TUI: a task tree with status bars, due dates, and an ETA column](https://raw.githubusercontent.com/davidB/todoapp/main/docs/demo.gif)
+
+*Early build of the TUI — tree view with per-task status/progress bars, due
+dates, and ETA projection.*
+
+## Try it
+
+```sh
+brew install davidB/tap/todoapp-cli
+tda
+```
+
+`tda` opens on a local database it creates for you — no account, no server,
+nothing to configure. Press `a` to add a task, `?` for keys, `esc` to quit.
+
+Other install methods (shell installer, mise, cargo, prebuilt binaries) are in
+[Install](#install) below.
 
 ## Why tda
 
@@ -17,11 +37,9 @@ personal capture. `tda` tries to sit between them:
 
 - **Keyboard-first, capture at typing speed** — batch-add tasks, navigate like
   a file manager, no mouse required.
-- **Team-aware, without accounts.** There's no login, no auth system — it's a
-  local-first, single trusted store — but assignment is still a first-class,
-  optional, multi-valued capability: a task can have 0–n assignees, and each
-  one can be a person *or* an agent. Not a single-user tool, just one without
-  account ceremony.
+- **Team-aware, without accounts.** No login, no auth system — just one local,
+  trusted store. Assignment is still first-class: a task takes 0–n assignees,
+  and each one can be a person *or* an agent.
 - **A tree *and* a graph.** Tasks live in one structural hierarchy (for
   breadcrumbs and priority) plus an independent `blocks` dependency DAG (for
   "what's blocking what") — see [backlog.md](https://github.com/MrLesk/Backlog.md)
@@ -35,74 +53,32 @@ The full design rationale lives in [`tda-spec.md`](tda-spec.md).
 
 ## Features
 
-- Batch keyboard capture — one task per line, no per-task dialog friction.
-- Arbitrary-depth hierarchy (single-parent `child` tree) plus a `blocks`
-  dependency DAG for cross-cutting "blocked by" relationships.
-- Manual ordering (drag-free reorder = priority) and saved/derived query
-  views (e.g. "what next", "due today") with their own sort.
-- À la carte capabilities per task: `Status`, `Notes` (Markdown), `Schedule`,
-  `Estimate`, `Tags`, `Assignment` (0–n, human or agent), `Recurrence`,
-  `IssueRef`, `Attachments`, `TimeLog`.
-- Claim/delegate: a `todo` task can be claimed by anyone (or only its
-  assignee, if one is set), handing off with full parent context.
-- `@name`/`#tag`/`[...]` title syntax: typing `fix @alice bug #urgent` in a
-  title auto-assigns `alice` and tags `urgent`; `Ship it [2026-07-20]` or
-  `Standup [09:00] [mon,tue,wed,thu,fri]` sets a due date/time or recurrence —
-  no separate step, works from CLI, TUI, or import.
-- Aggregation up the tree: subtree progress %, summed estimate/time-spent,
-  earliest due date — each capability defines its own roll-up.
-- Markdown and JSON import/export of any list or branch.
+- **Type the metadata inline.** `fix @alice bug #urgent` assigns and tags as you
+  type. `Ship it [2026-07-20]` sets a due date. `Standup [09:00]
+  [mon,tue,wed,thu,fri]` sets a recurrence. No dialogs, no second step — works
+  from the CLI, the TUI, or an import.
+- **Capture in batches** — one task per line, indent for depth. Paste a plan in,
+  get a tree out.
+- **A tree and a graph.** Arbitrary-depth hierarchy (single-parent `child` tree)
+  plus an independent `blocks` DAG for cross-cutting "blocked by".
+- **Claim and delegate.** A `todo` task can be claimed by anyone — or only its
+  assignee, if one is set — and hands off with full parent context.
+- **Roll-ups up the tree**: subtree progress %, summed estimate/time-spent,
+  earliest due date. Each capability defines its own.
+- **Order by hand, or by query.** Drag-free reorder sets priority; saved and
+  derived views ("what next", "due today") bring their own sort.
+- **Markdown and JSON import/export** of any list or branch.
 
-See [`tda-spec.md` §2](tda-spec.md#2-goals--non-goals) and
-[§4](tda-spec.md#4-functional-requirements-deduped-from-notes) for the full
+Each task carries only the capabilities you give it — `Status`, `Notes`,
+`Schedule`, `Estimate`, `Tags`, `Assignment`, `Recurrence`, `IssueRef`,
+`Attachments`, `TimeLog`. See [`tda-spec.md` §2](tda-spec.md#2-goals--non-goals)
+and [§4](tda-spec.md#4-functional-requirements-deduped-from-notes) for the full
 requirements list.
-
-## Screenshot
-
-![tda TUI: a task tree with status bars, due dates, and an ETA column](https://raw.githubusercontent.com/davidB/todoapp/main/docs/demo.gif)
-
-*Early build of the TUI — tree view with per-task status/progress bars, due
-dates, and ETA projection.*
-
-## Install
-
-**Homebrew** (macOS/Linux):
-
-```sh
-brew install davidB/tap/todoapp-cli
-
-```
-
-**Shell installer** (macOS/Linux):
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/davidB/todoapp/releases/latest/download/todoapp-cli-installer.sh | sh
-```
-
-**mise** (via the [`github`](https://mise.jdx.dev/dev-tools/backends/github.html)
-backend, pulls the prebuilt GitHub release binary):
-
-```sh
-mise use -g "github:davidB/todoapp[exe=tda]"
-```
-
-**From source:**
-
-```sh
-cargo install --path crates/todoapp-cli
-```
-
-Prebuilt binaries for macOS (Apple Silicon/Intel) and Linux are also available
-on the [releases page](https://github.com/davidB/todoapp/releases).
 
 ## TUI
 
-The `tda` binary (built from [`todoapp-cli`](crates/todoapp-cli)) launches a
-full-screen, keyboard-only TUI by default:
-
-```sh
-tda                             # or: tda tui
-```
+Run `tda` with no subcommand (or `tda tui`) and the binary — built from
+[`todoapp-cli`](crates/todoapp-cli) — opens a full-screen, keyboard-only TUI.
 
 | Key | Action |
 |---|---|
@@ -193,6 +169,33 @@ mind from the start, not bolted on:
 - **Planned** ([`tda-spec.md` §10](tda-spec.md#10-roadmap), milestone M5): an
   HTTP API (`todoapp-api`) and an MCP server (`todoapp-mcp`) for agents that
   speak those protocols directly.
+
+## Install
+
+`brew install davidB/tap/todoapp-cli` covers most cases (see [Try
+it](#try-it)). The alternatives:
+
+**Shell installer** (macOS/Linux):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/davidB/todoapp/releases/latest/download/todoapp-cli-installer.sh | sh
+```
+
+**mise** (via the [`github`](https://mise.jdx.dev/dev-tools/backends/github.html)
+backend, pulls the prebuilt GitHub release binary):
+
+```sh
+mise use -g "github:davidB/todoapp[exe=tda]"
+```
+
+**From source:**
+
+```sh
+cargo install --path crates/todoapp-cli
+```
+
+Prebuilt binaries for macOS (Apple Silicon/Intel) and Linux are also available
+on the [releases page](https://github.com/davidB/todoapp/releases).
 
 ## Status / Roadmap
 
