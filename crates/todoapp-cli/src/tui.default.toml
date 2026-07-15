@@ -7,7 +7,7 @@
 # (see [keybindings] below, default alt+right/alt+left) work inside the
 # add dialog too, whether or not this is on — they shift the depth of the
 # task just created before you type the next one.
-chain_add = true
+chain_add = false
 
 [columns]
 # "id" shows the shortest unique prefix (git/jj-style abbreviation), usable
