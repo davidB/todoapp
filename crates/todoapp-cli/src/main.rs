@@ -1,7 +1,8 @@
 //! tda CLI (spec §9 / M3): JSON output for agents and scripts. TUI is for humans.
 //!
-//! `main` is thin: parse args, handle the `tui`/`db` subcommands, otherwise
-//! build a [`Request`] and run it. Command execution lives in [`command`];
+//! `main` is thin: parse args (no subcommand = `tui`), handle the `tui`/`db`
+//! subcommands, otherwise build a [`Request`] and run it. Command execution
+//! lives in [`command`];
 //! Phase 4 will try a running TUI server first (see [`ipc`]) before the direct
 //! path taken here.
 
@@ -33,8 +34,9 @@ struct Cli {
     /// Database file to use (overrides local/global discovery).
     #[arg(long, global = true)]
     db: Option<PathBuf>,
+    /// Defaults to `tui` when omitted.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 // ---- main -------------------------------------------------------------------
@@ -42,17 +44,18 @@ struct Cli {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let cmd = cli.cmd.unwrap_or(Cmd::Tui);
 
-    if let Cmd::Tui = cli.cmd {
+    if let Cmd::Tui = cmd {
         #[cfg(feature = "tui")]
         return tui::run(cli.db).await;
         #[cfg(not(feature = "tui"))]
         anyhow::bail!("this `tda` was built without the `tui` feature");
     }
 
-    if let Cmd::Db { cmd } = &cli.cmd {
+    if let Cmd::Db { cmd: db_cmd } = &cmd {
         let cwd = std::env::current_dir().context("current dir")?;
-        match cmd {
+        match db_cmd {
             DbCmd::Init => {
                 let path = cwd.join(".tda/tda.db");
                 // open_store creates the .tda dir and initializes the schema
@@ -70,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("current dir")?;
     // Only `add --batch` consumes stdin; reading it unconditionally would hang
     // on a tty for every other command.
-    let stdin = if matches!(cli.cmd, Cmd::Add { batch: true, .. }) {
+    let stdin = if matches!(cmd, Cmd::Add { batch: true, .. }) {
         let mut buf = Vec::new();
         io::stdin().read_to_end(&mut buf).context("read stdin")?;
         buf
@@ -78,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         Vec::new()
     };
     let req = Request {
-        cmd: cli.cmd,
+        cmd,
         cwd: cwd.clone(),
         stdin,
     };
