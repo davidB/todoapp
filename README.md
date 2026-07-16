@@ -90,15 +90,25 @@ Run `tda` with no subcommand (or `tda tui`) and the binary — built from
 | `space` | cycle status |
 | `c` | claim (→ `wip`, actor `me`) |
 | `s` | assign to actor(s) (additive, comma-separated) |
+| `d` | delete task (confirm) |
 | `alt+↑` / `alt+↓` | reorder among siblings |
 | `alt+→` / `alt+←` | reparent in / out |
+| `m` | mark/unmark task **and its whole subtree** (batch selection) |
+| `p` | move marked branches under the cursor task (hierarchy preserved) |
 | `/` | text search |
 | `n` | jump to "what next" |
 | `v` | toggle live details pane (non-modal, follows the cursor) |
 | `y` | yank (copy) title to clipboard |
 | `enter` | view detail |
 | `?` | toggle help |
-| `esc` | quit / back |
+| `esc` | clear selection · quit / back |
+
+**Batch selection.** Press `m` to mark a task and its entire subtree (works even
+when collapsed); marked rows show a gutter marker. With marks active, the
+field ops (`space` cycle status, `c` claim, `s` assign) apply to *every* marked
+task — parent and children — while the structural ops (`p` move, `d` delete)
+act on whole marked branches. `p` reparents each marked branch under the cursor
+task, keeping its children attached; `esc` clears the selection.
 
 Data is stored via the [Turso](https://turso.tech/) adapter in the
 OS-standard data dir (e.g. `~/.local/share/tda/tda.db` on Linux).

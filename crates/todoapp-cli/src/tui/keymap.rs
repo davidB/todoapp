@@ -43,6 +43,8 @@ pub enum Action {
     Select,
     Yank,
     Delete,
+    ToggleMark,
+    MoveMarked,
 }
 
 impl Action {
@@ -111,6 +113,16 @@ impl Action {
         ),
         ("yank", Action::Yank, "yank (copy) title to clipboard"),
         ("delete", Action::Delete, "delete task (confirm)"),
+        (
+            "toggle_mark",
+            Action::ToggleMark,
+            "mark/unmark task + its subtree (batch selection)",
+        ),
+        (
+            "move_marked",
+            Action::MoveMarked,
+            "move marked branches under the cursor task",
+        ),
     ];
 
     fn from_name(name: &str) -> Option<Action> {

@@ -82,7 +82,9 @@ pub enum InputMode {
     AddChild(Id),
     AddRoot,
     Search,
-    Assign(Id),
+    /// Quick-assign prompt targeting one-or-more tasks (the marked set, or the
+    /// cursor task when nothing is marked). Actors typed comma-separated.
+    Assign(Vec<Id>),
 }
 
 /// Field labels for `TaskEditForm`, in `fields` order. `id` is shown for
@@ -213,11 +215,17 @@ pub struct AppState {
     pub short_ids: HashMap<Id, String>,
     pub cursor: usize,
     pub expanded: HashSet<Id>,
+    /// Batch-selection set (spec §multi-select): marking a task marks its whole
+    /// subtree. Empty = ordinary single-cursor behaviour. Field ops (assign,
+    /// status, claim) target every marked id; structural ops (move, delete)
+    /// target only the marked *roots* so subtrees move/delete intact.
+    pub marked: HashSet<Id>,
     pub view: View,
     /// Active input modal: (mode, typed text).
     pub input: Option<(InputMode, Input)>,
-    /// Pending delete confirmation: (task id, has-children flag).
-    pub confirm_delete: Option<(Id, bool)>,
+    /// Pending delete confirmation: the marked root ids to delete (each with
+    /// `recursive=true`). A single-cursor delete is just a one-element list.
+    pub confirm_delete: Option<Vec<Id>>,
     /// Active task edit form (title/notes/due/estimate/assignee), if open.
     pub edit_form: Option<TaskEditForm>,
     /// Workspace-assignment popup, opened from the edit form's workspace field.
@@ -416,6 +424,7 @@ impl AppState {
             short_ids: HashMap::new(),
             cursor: 0,
             expanded: HashSet::new(),
+            marked: HashSet::new(),
             view: View::Tree,
             input: None,
             confirm_delete: None,
@@ -446,7 +455,14 @@ impl AppState {
         )
         .await;
         self.items = new_items;
-        self.short_ids = shortest_unique_prefixes(&self.store.all().await);
+        let all_ids = self.store.all().await;
+        self.short_ids = shortest_unique_prefixes(&all_ids);
+        // Drop marks for tasks that no longer exist (deleted here or externally
+        // via the socket) so batch targets never point at ghosts.
+        if !self.marked.is_empty() {
+            let live: HashSet<&Id> = all_ids.iter().collect();
+            self.marked.retain(|id| live.contains(id));
+        }
         if self.cursor >= self.items.len() {
             self.cursor = self.items.len().saturating_sub(1);
         }
@@ -462,6 +478,53 @@ impl AppState {
 
     pub fn cursor_id(&self) -> Option<Id> {
         self.items.get(self.cursor).map(|i| i.id.clone())
+    }
+
+    /// Full batch target for *field* ops (assign / status / claim): every marked
+    /// id — parent and all descendants — in tree order, so "assign all children
+    /// in one shot" works. Falls back to the cursor task when nothing is marked.
+    fn marked_ids(&self) -> Vec<Id> {
+        if self.marked.is_empty() {
+            return self.cursor_id().into_iter().collect();
+        }
+        // Tree order where visible; append any marked-but-collapsed ids so none
+        // are dropped just because their subtree isn't expanded.
+        let mut ids: Vec<Id> = self
+            .items
+            .iter()
+            .filter(|i| self.marked.contains(&i.id))
+            .map(|i| i.id.clone())
+            .collect();
+        let seen: HashSet<&Id> = ids.iter().collect();
+        let missing: Vec<Id> = self
+            .marked
+            .iter()
+            .filter(|id| !seen.contains(id))
+            .cloned()
+            .collect();
+        ids.extend(missing);
+        ids
+    }
+
+    /// Batch target for *structural* ops (move / delete): only the marked roots —
+    /// marked ids whose parent is not itself marked — so whole subtrees move or
+    /// delete intact. Falls back to the cursor task when nothing is marked.
+    async fn marked_roots(&self) -> Vec<Id> {
+        if self.marked.is_empty() {
+            return self.cursor_id().into_iter().collect();
+        }
+        let svc = make_svc(&self.store, &self.clock, &self.ids);
+        let mut roots = Vec::new();
+        for id in self.marked_ids() {
+            let parent_marked = match svc.parent_of(&id).await {
+                Some(p) => self.marked.contains(&p),
+                None => false,
+            };
+            if !parent_marked {
+                roots.push(id);
+            }
+        }
+        roots
     }
 
     /// Id of the current selection, for Tree and List views (the details pane
@@ -621,6 +684,11 @@ impl AppState {
 
         match action {
             Action::Quit => {
+                // Esc cancels an active batch selection before it would quit.
+                if !self.marked.is_empty() {
+                    self.marked.clear();
+                    return Ok(true);
+                }
                 if in_tree {
                     return Ok(false);
                 }
@@ -752,9 +820,11 @@ impl AppState {
                 }
             }
             // Delete (tree only) — arms the confirm modal, actual delete on 'y'.
+            // Targets the marked roots (whole subtrees) or the cursor task.
             Action::Delete if in_tree => {
-                if let Some(item) = self.items.get(self.cursor) {
-                    self.confirm_delete = Some((item.id.clone(), item.has_children));
+                let roots = self.marked_roots().await;
+                if !roots.is_empty() {
+                    self.confirm_delete = Some(roots);
                 }
             }
             // Toggle the (non-modal) details pane; it follows the selection and
@@ -783,10 +853,12 @@ impl AppState {
             Action::Claim if in_tree => {
                 self.claim().await?;
             }
-            // Quick assign: prompt for actor(s), additive (tree only)
+            // Quick assign: prompt for actor(s), additive — applied to every
+            // marked id (children included) or the cursor task (tree only).
             Action::Assign if in_tree => {
-                if let Some(id) = self.cursor_id() {
-                    self.input = Some((InputMode::Assign(id), Input::default()));
+                let ids = self.marked_ids();
+                if !ids.is_empty() {
+                    self.input = Some((InputMode::Assign(ids), Input::default()));
                 }
             }
             // Reorder among siblings (tree only)
@@ -802,6 +874,16 @@ impl AppState {
             }
             Action::ReparentOut if in_tree => {
                 self.reparent_out().await?;
+            }
+            // Toggle the batch mark on the cursor task *and its whole subtree*
+            // (tree only), then advance so repeated presses mark down the list.
+            Action::ToggleMark if in_tree => {
+                self.toggle_mark().await;
+                self.move_cursor(true);
+            }
+            // Move every marked branch under the cursor task (tree only).
+            Action::MoveMarked if in_tree => {
+                self.move_marked().await;
             }
             // Enter char-range select mode on the current row's title (any view).
             Action::Select => {
@@ -1014,19 +1096,23 @@ impl AppState {
                 self.view = View::List(hits);
                 self.cursor = 0;
             }
-            InputMode::Assign(id) => {
+            InputMode::Assign(ids) => {
                 let mut error = None;
                 {
                     let svc = make_svc(&self.store, &self.clock, &self.ids);
+                    // Every actor applied to every target task (additive).
                     for actor in parse_actor_list(&text) {
-                        if let Err(e) = svc.assign(&id, actor).await {
-                            error = Some(format!("assign: {e}"));
+                        for id in &ids {
+                            if let Err(e) = svc.assign(id, actor.clone()).await {
+                                error = Some(format!("assign: {e}"));
+                            }
                         }
                     }
                 }
                 if let Some(msg) = error {
                     self.set_status(msg);
                 }
+                self.marked.clear();
                 self.rebuild().await;
             }
         }
@@ -1199,57 +1285,80 @@ impl AppState {
     }
 
     async fn cycle_status(&mut self) -> anyhow::Result<()> {
-        let Some(item) = self.items.get(self.cursor).cloned() else {
+        let targets = self.marked_ids();
+        if targets.is_empty() {
             return Ok(());
-        };
-        let order = &self.config.status_order;
-        let new_status = match order.iter().position(|s| *s == item.status) {
-            Some(i) => order[(i + 1) % order.len()],
-            None => order[0],
-        };
-        let result = {
-            let svc = make_svc(&self.store, &self.clock, &self.ids);
-            svc.set_status(&item.id, new_status).await
-        };
-        if let Err(e) = result {
-            self.set_status(format!("status: {e}"));
         }
+        let order = self.config.status_order.clone();
+        let mut error = None;
+        {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            // Each task advances from *its own* current status.
+            for id in targets {
+                let Ok(snap) = svc.snapshot(&id).await else {
+                    continue;
+                };
+                let new_status = match order.iter().position(|s| *s == snap.status) {
+                    Some(i) => order[(i + 1) % order.len()],
+                    None => order[0],
+                };
+                if let Err(e) = svc.set_status(&id, new_status).await {
+                    error = Some(format!("status: {e}"));
+                }
+            }
+        }
+        if let Some(msg) = error {
+            self.set_status(msg);
+        }
+        self.marked.clear();
         self.rebuild().await;
         Ok(())
     }
 
     async fn claim(&mut self) -> anyhow::Result<()> {
-        let Some(item) = self.items.get(self.cursor).cloned() else {
+        let targets = self.marked_ids();
+        if targets.is_empty() {
             return Ok(());
-        };
-        // ponytail: single-user TUI — fixed actor "me"; no auth in v1 (spec §2/§13 Q5)
-        let result = {
-            let svc = make_svc(&self.store, &self.clock, &self.ids);
-            svc.claim(&item.id, Id::new("me")).await
-        };
-        match result {
-            Ok(_) => self.rebuild().await,
-            Err(e) => self.set_status(format!("claim: {e}")),
         }
+        // ponytail: single-user TUI — fixed actor "me"; no auth in v1 (spec §2/§13 Q5)
+        let mut error = None;
+        {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            for id in targets {
+                if let Err(e) = svc.claim(&id, Id::new("me")).await {
+                    error = Some(format!("claim: {e}"));
+                }
+            }
+        }
+        if let Some(msg) = error {
+            self.set_status(msg);
+        }
+        self.marked.clear();
+        self.rebuild().await;
         Ok(())
     }
 
     async fn handle_confirm_delete_key(&mut self, code: KeyCode) -> anyhow::Result<bool> {
-        let Some((id, has_children)) = self.confirm_delete.take() else {
+        let Some(ids) = self.confirm_delete.take() else {
             return Ok(true);
         };
         if let KeyCode::Char('y' | 'Y') = code {
-            let result = {
+            let mut error = None;
+            {
                 let svc = make_svc(&self.store, &self.clock, &self.ids);
-                svc.delete_task(&id, has_children).await
-            };
-            match result {
-                Ok(()) => {
-                    self.rebuild().await;
-                    self.cursor = self.cursor.min(self.item_count().saturating_sub(1));
+                // Roots only, recursive: each carries its own subtree.
+                for id in ids {
+                    if let Err(e) = svc.delete_task(&id, true).await {
+                        error = Some(format!("delete: {e}"));
+                    }
                 }
-                Err(e) => self.set_status(format!("delete: {e}")),
             }
+            if let Some(msg) = error {
+                self.set_status(msg);
+            }
+            self.marked.clear();
+            self.rebuild().await;
+            self.cursor = self.cursor.min(self.item_count().saturating_sub(1));
         }
         Ok(true)
     }
@@ -1362,6 +1471,60 @@ impl AppState {
             Some(Err(e)) => self.set_status(format!("reparent: {e}")),
         }
         Ok(())
+    }
+
+    /// Toggle the batch mark on the cursor task and its whole subtree. Reads the
+    /// subtree from the store (not the visible `items`), so a collapsed branch
+    /// still marks all its descendants.
+    async fn toggle_mark(&mut self) {
+        let Some(id) = self.cursor_id() else {
+            return;
+        };
+        let subtree = {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            svc.descendants(&id).await
+        };
+        if self.marked.contains(&id) {
+            self.marked.remove(&id);
+            for d in subtree {
+                self.marked.remove(&d);
+            }
+        } else {
+            self.marked.insert(id);
+            self.marked.extend(subtree);
+        }
+    }
+
+    /// Move every marked branch (its root) under the cursor task, preserving each
+    /// subtree's internal hierarchy (`move_task` carries the whole subtree). The
+    /// decider rejects a move that would create a cycle — e.g. the cursor sits
+    /// inside a marked subtree — which is surfaced as a status message.
+    async fn move_marked(&mut self) {
+        let Some(parent) = self.cursor_id() else {
+            return;
+        };
+        let roots = self.marked_roots().await;
+        let mut error = None;
+        {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            for id in roots {
+                if id == parent {
+                    continue;
+                }
+                if let Err(e) = svc.move_task(&id, &parent, None).await {
+                    error = Some(format!("move: {e}"));
+                }
+            }
+        }
+        if let Some(msg) = error {
+            self.set_status(msg);
+        }
+        self.expanded.insert(parent.clone());
+        self.marked.clear();
+        self.rebuild().await;
+        if let Some(pos) = self.items.iter().position(|i| i.id == parent) {
+            self.cursor = pos;
+        }
     }
 
     /// Opens the workspace-assignment popup on the edit form's workspace
@@ -1747,7 +1910,9 @@ pub(crate) mod tests {
         app.cursor = app.items.iter().position(|i| i.id == id).unwrap();
 
         app.handle_event(press_char('s'), TERM_WIDTH).await.unwrap();
-        assert!(matches!(&app.input, Some((InputMode::Assign(target), _)) if *target == id));
+        assert!(
+            matches!(&app.input, Some((InputMode::Assign(target), _)) if *target == vec![id.clone()])
+        );
         type_str(&mut app, "bob").await;
         app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
             .await
@@ -2443,5 +2608,136 @@ pub(crate) mod tests {
         app.handle_event(press_char('v'), TERM_WIDTH).await.unwrap();
         assert!(!app.detail_shown);
         assert!(app.detail.is_none());
+    }
+
+    /// Build a fixed tree for the multi-select tests: a branch `P` with two
+    /// children `C1`/`C2`, plus a standalone sibling `S` (the move target).
+    /// Returns `(p, c1, c2, s)`. `P` stays collapsed (nothing added to
+    /// `expanded`) so tests also cover marking a collapsed subtree.
+    async fn tree_p_children_s(app: &mut AppState) -> (Id, Id, Id, Id) {
+        let ids = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            let p = svc.create("P", None, Status::Todo, []).await.unwrap().id;
+            let c1 = svc
+                .create("C1", Some(&p), Status::Todo, [])
+                .await
+                .unwrap()
+                .id;
+            let c2 = svc
+                .create("C2", Some(&p), Status::Todo, [])
+                .await
+                .unwrap()
+                .id;
+            let s = svc.create("S", None, Status::Todo, []).await.unwrap().id;
+            (p, c1, c2, s)
+        };
+        app.rebuild().await;
+        ids
+    }
+
+    fn cursor_to(app: &mut AppState, id: &Id) {
+        app.cursor = app.items.iter().position(|i| &i.id == id).unwrap();
+    }
+
+    /// `m` marks a task *and its whole subtree* (even collapsed), and `p` moves
+    /// the marked branch under the cursor task while keeping its children.
+    #[tokio::test]
+    async fn mark_selects_whole_subtree_and_move_preserves_hierarchy() {
+        let mut app = new_app().await;
+        let (p, c1, c2, s) = tree_p_children_s(&mut app).await;
+
+        // Mark the (collapsed) branch P.
+        cursor_to(&mut app, &p);
+        app.handle_event(press_char('m'), TERM_WIDTH).await.unwrap();
+        assert_eq!(
+            app.marked,
+            HashSet::from([p.clone(), c1.clone(), c2.clone()]),
+            "marking P must recursively mark its subtree even when collapsed"
+        );
+        // Roots = just P; the full set = the whole subtree.
+        assert_eq!(app.marked_roots().await, vec![p.clone()]);
+        assert_eq!(app.marked_ids().len(), 3);
+
+        // Move the marked branch under S.
+        cursor_to(&mut app, &s);
+        app.handle_event(press_char('p'), TERM_WIDTH).await.unwrap();
+        assert!(app.marked.is_empty(), "marks cleared after move");
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        assert_eq!(svc.parent_of(&p).await.as_ref(), Some(&s));
+        assert_eq!(svc.parent_of(&c1).await.as_ref(), Some(&p));
+        assert_eq!(svc.parent_of(&c2).await.as_ref(), Some(&p));
+    }
+
+    /// `m` toggles off (removes the subtree); `esc` clears an active selection
+    /// instead of quitting.
+    #[tokio::test]
+    async fn mark_toggle_off_and_esc_clears() {
+        let mut app = new_app().await;
+        let (p, _c1, _c2, _s) = tree_p_children_s(&mut app).await;
+
+        cursor_to(&mut app, &p);
+        app.handle_event(press_char('m'), TERM_WIDTH).await.unwrap();
+        assert_eq!(app.marked.len(), 3);
+        // Toggle the same branch off.
+        cursor_to(&mut app, &p);
+        app.handle_event(press_char('m'), TERM_WIDTH).await.unwrap();
+        assert!(app.marked.is_empty(), "second m unmarks the whole subtree");
+
+        // Re-mark, then esc clears without quitting.
+        cursor_to(&mut app, &p);
+        app.handle_event(press_char('m'), TERM_WIDTH).await.unwrap();
+        assert_eq!(app.marked.len(), 3);
+        let keep_running = app
+            .handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(keep_running, "esc must not quit while marks are active");
+        assert!(app.marked.is_empty());
+    }
+
+    /// Batch assign applies the actor to every marked id — parent and children.
+    #[tokio::test]
+    async fn batch_assign_reaches_all_descendants() {
+        let mut app = new_app().await;
+        let (p, c1, c2, _s) = tree_p_children_s(&mut app).await;
+
+        cursor_to(&mut app, &p);
+        app.handle_event(press_char('m'), TERM_WIDTH).await.unwrap();
+        // `s` = assign; prompt should target the whole marked set.
+        app.handle_event(press_char('s'), TERM_WIDTH).await.unwrap();
+        assert!(matches!(&app.input, Some((InputMode::Assign(t), _)) if t.len() == 3));
+        type_str(&mut app, "bot").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.marked.is_empty());
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        for id in [&p, &c1, &c2] {
+            let snap = svc.snapshot(id).await.unwrap();
+            assert!(
+                snap.assignments.iter().any(|a| a.actor == Id::new("bot")),
+                "every task in the marked branch should carry the actor"
+            );
+        }
+    }
+
+    /// Batch status-cycle advances each marked task from its *own* status.
+    #[tokio::test]
+    async fn batch_cycle_status_advances_each_marked_task() {
+        let mut app = new_app().await;
+        let (p, c1, c2, _s) = tree_p_children_s(&mut app).await;
+
+        cursor_to(&mut app, &p);
+        app.handle_event(press_char('m'), TERM_WIDTH).await.unwrap();
+        // space = cycle_status; default order starts todo -> wip.
+        app.handle_event(press_char(' '), TERM_WIDTH).await.unwrap();
+        assert!(app.marked.is_empty());
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        for id in [&p, &c1, &c2] {
+            assert_eq!(svc.snapshot(id).await.unwrap().status, Status::Wip);
+        }
     }
 }

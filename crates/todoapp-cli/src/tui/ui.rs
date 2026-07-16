@@ -51,8 +51,8 @@ pub fn render(f: &mut Frame, app: &AppState) {
     if let Some((mode, input)) = &app.input {
         render_input_modal(f, area, mode, input);
     }
-    if let Some((id, has_children)) = &app.confirm_delete {
-        render_confirm_delete_modal(f, area, app, id, *has_children);
+    if let Some(ids) = &app.confirm_delete {
+        render_confirm_delete_modal(f, area, app, ids);
     }
     if let Some(form) = &app.edit_form {
         render_edit_form(f, area, form);
@@ -96,7 +96,16 @@ fn render_tree(f: &mut Frame, area: Rect, app: &AppState) {
         .items
         .iter()
         .enumerate()
-        .map(|(i, item)| item_row(item, columns, app, tree_col_width, i == app.cursor))
+        .map(|(i, item)| {
+            item_row(
+                item,
+                columns,
+                app,
+                tree_col_width,
+                i == app.cursor,
+                app.marked.contains(&item.id),
+            )
+        })
         .collect();
 
     let mut widths = vec![Constraint::Fill(1)];
@@ -133,8 +142,15 @@ fn item_row(
     app: &AppState,
     tree_col_width: u16,
     is_cursor: bool,
+    is_marked: bool,
 ) -> Row<'static> {
-    let tree_cell = Cell::from(tree_cell_line(item, app, tree_col_width, is_cursor));
+    let tree_cell = Cell::from(tree_cell_line(
+        item,
+        app,
+        tree_col_width,
+        is_cursor,
+        is_marked,
+    ));
     let cells =
         std::iter::once(tree_cell).chain(columns.iter().map(|c| render_column(item, *c, app)));
     Row::new(cells)
@@ -158,7 +174,12 @@ fn tree_cell_line(
     app: &AppState,
     tree_col_width: u16,
     is_cursor: bool,
+    is_marked: bool,
 ) -> Line<'static> {
+    // A 1-char batch-selection gutter, always present so indentation stays
+    // aligned whether or not a row is marked.
+    // ponytail: hardcoded glyph/style; a `[marks]` config knob is a later YAGNI.
+    let gutter = if is_marked { "▍" } else { " " };
     let indent = "  ".repeat(item.depth);
     let arrow = if item.has_children {
         if item.is_expanded { "▼ " } else { "▶ " }
@@ -166,15 +187,23 @@ fn tree_cell_line(
         "· "
     };
     let icon = status_icon(item.status, app);
-    let prefix = format!("{indent}{arrow}");
+    let prefix = format!("{gutter}{indent}{arrow}");
     let badge_width = if item.is_blocked { 4 } else { 0 }; // " [!]"
     let title_width = usize::from(tree_col_width)
         .saturating_sub(prefix.chars().count())
         .saturating_sub(icon.chars().count() + 1)
         .saturating_sub(badge_width)
         .max(1);
+    let gutter_style = if is_marked {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
     let mut spans = vec![
-        Span::raw(prefix),
+        Span::styled(gutter.to_string(), gutter_style),
+        Span::raw(format!("{indent}{arrow}")),
         Span::styled(icon, app.config.style_for(Semantic::Glyph(item.status))),
         Span::raw(" "),
     ];
@@ -687,18 +716,22 @@ fn render_confirm_delete_modal(
     f: &mut Frame,
     area: Rect,
     app: &AppState,
-    id: &todoapp_core::Id,
-    has_children: bool,
+    ids: &[todoapp_core::Id],
 ) {
-    let title = app
-        .items
-        .iter()
-        .find(|i| &i.id == id)
-        .map_or(id.as_str(), |i| i.title.as_str());
-    let text = if has_children {
-        format!("Delete '{title}' and all its descendants? (y/N)")
-    } else {
-        format!("Delete '{title}'? (y/N)")
+    let text = match ids {
+        [id] => {
+            let item = app.items.iter().find(|i| &i.id == id);
+            let title = item.map_or(id.as_str(), |i| i.title.as_str());
+            if item.is_some_and(|i| i.has_children) {
+                format!("Delete '{title}' and all its descendants? (y/N)")
+            } else {
+                format!("Delete '{title}'? (y/N)")
+            }
+        }
+        _ => format!(
+            "Delete {} tasks and all their descendants? (y/N)",
+            ids.len()
+        ),
     };
     let popup = centered_rect(area, 60, 3);
     let p = Paragraph::new(text).wrap(Wrap { trim: true }).block(
