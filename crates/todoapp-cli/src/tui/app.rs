@@ -984,12 +984,27 @@ impl AppState {
             None
         };
         if let Some(action) = depth_shift_action {
-            match action {
-                Action::ReparentIn => self.reparent_in().await?,
-                Action::ReparentOut => self.reparent_out().await?,
-                _ => unreachable!(),
+            // Macro, equivalent to typing "Alt+Enter, then Alt+Right/Left, then
+            // (if chain_add) `a`": submit the typed text as a new task (which
+            // *selects* it via `submit_input`), reparent that new task, then
+            // reopen the add dialog below when chaining. Empty input is a no-op
+            // beyond closing the dialog, mirroring the Alt+Enter branch —
+            // reparenting the still-selected existing task instead would move
+            // the wrong task.
+            if let Some((mode, input)) = self.input.take() {
+                let trimmed = input.value().trim().to_string();
+                if !trimmed.is_empty() {
+                    self.submit_input(mode, trimmed).await?;
+                    match action {
+                        Action::ReparentIn => self.reparent_in().await?,
+                        Action::ReparentOut => self.reparent_out().await?,
+                        _ => unreachable!(),
+                    }
+                    if self.config.chain_add {
+                        self.open_add_sibling().await;
+                    }
+                }
             }
-            self.open_add_sibling().await;
             return Ok(true);
         }
 
@@ -1995,44 +2010,73 @@ pub(crate) mod tests {
         assert!(app.input.is_none());
     }
 
-    /// Alt+Right/Alt+Left (`reparent_in`/`reparent_out`'s default chords) work
-    /// inside the add dialog to shift the cursor task's depth, independent
-    /// of `chain_add` — same as pressing them in tree view.
+    /// Alt+Right/Alt+Left inside the add dialog is a macro: it *submits* the
+    /// typed text as a new task (which selects it), then reparents that new
+    /// task — like "Alt+Enter, then Alt+Right/Left". The reparent hits the
+    /// newly-added task (not the previously-selected parent), and the typed
+    /// text is never dropped.
     #[tokio::test]
-    async fn depth_shift_works_in_add_dialog_regardless_of_chain_add() {
+    async fn depth_shift_in_add_dialog_submits_then_reparents_new_task() {
         let mut app = new_app().await; // chain_add = false (default)
+        // Seed a root task A.
         app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
         type_str(&mut app, "A").await;
         app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
             .await
             .unwrap();
-        assert!(app.input.is_none()); // dialog closed, not chaining
+        assert_eq!(depth_of(&app, "A"), Some(0));
 
+        // Type "B" and alt+right in one chord: B is created (text not lost) and
+        // nested under A; A itself does not move.
         app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
         type_str(&mut app, "B").await;
-        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
-            .await
-            .unwrap();
-        assert_eq!(depth_of(&app, "B"), Some(0)); // sibling of A at root
-
-        // Reopen the dialog on B and nest it under A via alt+right.
-        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
         app.handle_event(press(KeyCode::Right, KeyModifiers::ALT), TERM_WIDTH)
             .await
             .unwrap();
-        assert_eq!(depth_of(&app, "B"), Some(1)); // now a child of A
-        let (mode, _) = app.input.as_ref().unwrap();
-        assert!(matches!(mode, InputMode::AddChild(_)));
+        assert_eq!(depth_of(&app, "B"), Some(1), "B created and nested under A");
+        assert_eq!(depth_of(&app, "A"), Some(0), "A (the parent) did not move");
+        assert!(app.input.is_none(), "chain_add off: dialog closes");
 
-        // Alt+left outdents it back to root.
+        // Type "C" and alt+left: C is created (child of A) then outdented to root.
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "C").await;
         app.handle_event(press(KeyCode::Left, KeyModifiers::ALT), TERM_WIDTH)
             .await
             .unwrap();
-        assert_eq!(depth_of(&app, "B"), Some(0));
+        assert_eq!(
+            depth_of(&app, "C"),
+            Some(0),
+            "C created then outdented to root"
+        );
+    }
+
+    /// With `chain_add`, the depth-shift macro also reopens the add dialog
+    /// below afterward — mirroring the trailing `a` in "Alt+Enter, Alt+Right, a".
+    #[tokio::test]
+    async fn depth_shift_in_add_dialog_reopens_when_chaining() {
+        let mut app = new_app_with(None, Some("[behavior]\nchain_add = true\n")).await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "A").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+
+        // Dialog stays open (chaining); type B then alt+right.
+        type_str(&mut app, "B").await;
+        app.handle_event(press(KeyCode::Right, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(depth_of(&app, "B"), Some(1)); // B created and nested under A
+        assert!(
+            app.input.is_some(),
+            "chain_add on: add dialog reopens below"
+        );
+        let (mode, _) = app.input.as_ref().unwrap();
+        assert!(matches!(mode, InputMode::AddChild(_))); // sibling-of-B target (child of A)
     }
 
     /// `reparent_in`'s chord is read live from the keymap, not hardcoded —
-    /// rebinding it still drives the same depth-shift-in-dialog behavior.
+    /// rebinding it still drives the same submit-then-reparent macro.
     #[tokio::test]
     async fn depth_shift_honors_rebound_chord() {
         let mut app = new_app_with(Some("[keybindings]\nreparent_in = [\"ctrl+j\"]\n"), None).await;
@@ -2041,17 +2085,14 @@ pub(crate) mod tests {
         app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
             .await
             .unwrap();
+
+        // Type B and trigger the *rebound* reparent_in chord (ctrl+j) mid-dialog.
         app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
         type_str(&mut app, "B").await;
-        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
-            .await
-            .unwrap();
-
-        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
         app.handle_event(press(KeyCode::Char('j'), KeyModifiers::CONTROL), TERM_WIDTH)
             .await
             .unwrap();
-        assert_eq!(depth_of(&app, "B"), Some(1)); // rebound chord nested B under A
+        assert_eq!(depth_of(&app, "B"), Some(1)); // rebound chord created B and nested it under A
     }
 
     /// The edit form's notes field is multi-line (Enter inserts a newline,
