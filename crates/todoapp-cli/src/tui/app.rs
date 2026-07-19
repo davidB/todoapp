@@ -20,6 +20,16 @@ use crate::tui::keymap::{Action, Keymap};
 use crate::tui::schedule::{project_finish_date, remaining_effort};
 use crate::tui::text_edit;
 
+/// Does this Enter chord submit the input dialog (vs. insert a newline)?
+/// `submit_on_enter` on: plain Enter (no Shift) submits. Off: Alt+Enter submits.
+fn is_submit_chord(modifiers: KeyModifiers, submit_on_enter: bool) -> bool {
+    if submit_on_enter {
+        !modifiers.contains(KeyModifiers::SHIFT)
+    } else {
+        modifiers.contains(KeyModifiers::ALT)
+    }
+}
+
 // ---- View types -------------------------------------------------------------
 
 /// One row in the rendered tree table. The non-tree columns are aggregates
@@ -1012,11 +1022,14 @@ impl AppState {
             return Ok(true);
         };
         match code {
-            // Alt+Enter submits; plain Enter inserts a newline (the dialog is
-            // multi-line/soft-wrapped) — see the keybinding note in the plan:
-            // Ctrl+Enter can't be reliably distinguished from plain Enter
-            // without opting into the Kitty keyboard-enhancement protocol.
-            KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => {
+            // Which Enter chord submits vs. inserts a newline depends on
+            // `submit_on_enter` (config). Default: Alt+Enter submits, plain
+            // Enter = newline (Ctrl+Enter can't be told apart from Enter
+            // without the Kitty keyboard-enhancement protocol). When
+            // `submit_on_enter` is on, plain Enter submits and Shift+Enter =
+            // newline (mod.rs pushes the enhancement flags so Shift+Enter is
+            // distinguishable on capable terminals).
+            KeyCode::Enter if is_submit_chord(modifiers, self.config.submit_on_enter) => {
                 if let Some((mode, input)) = self.input.take() {
                     let trimmed = input.value().trim().to_string();
                     if !trimmed.is_empty() {
@@ -1784,6 +1797,16 @@ pub(crate) mod tests {
     }
 
     const TERM_WIDTH: u16 = 120;
+
+    #[test]
+    fn submit_chord_depends_on_config() {
+        // Default (Alt+Enter submits, plain Enter = newline).
+        assert!(is_submit_chord(KeyModifiers::ALT, false));
+        assert!(!is_submit_chord(KeyModifiers::NONE, false));
+        // submit_on_enter (plain Enter submits, Shift+Enter = newline).
+        assert!(is_submit_chord(KeyModifiers::NONE, true));
+        assert!(!is_submit_chord(KeyModifiers::SHIFT, true));
+    }
 
     fn press(code: KeyCode, modifiers: KeyModifiers) -> crossterm::event::Event {
         crossterm::event::Event::Key(KeyEvent::new(code, modifiers))

@@ -42,9 +42,37 @@ pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
 
     let mut app = AppState::new(store, keymap, config, clipboard).await?;
     let mut terminal = ratatui::init();
+    // `submit_on_enter` needs Shift+Enter distinguishable from Enter, which
+    // only the keyboard-enhancement protocol provides. Push the disambiguation
+    // flag on terminals that support it; a no-op elsewhere (Shift+Enter then
+    // just reads as Enter and submits).
+    let pushed_kbd_flags = app.config.submit_on_enter && push_keyboard_flags();
     let result = run_loop(&mut terminal, &mut app, &db_path).await;
+    if pushed_kbd_flags {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PopKeyboardEnhancementFlags
+        );
+    }
     ratatui::restore();
     result
+}
+
+/// Enable Shift+Enter (and other modified keys) reporting where supported.
+/// Returns whether the flags were actually pushed (so we can pop on exit).
+fn push_keyboard_flags() -> bool {
+    use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    if !matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    ) {
+        return false;
+    }
+    crossterm::execute!(
+        std::io::stdout(),
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
 }
 
 /// While the TUI is up it holds the exclusively-locked db, so other `tda`

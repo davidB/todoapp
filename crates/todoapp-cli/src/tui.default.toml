@@ -8,6 +8,12 @@
 # add dialog too, whether or not this is on — they shift the depth of the
 # task just created before you type the next one.
 chain_add = false
+# How the add/input dialog treats Enter. Default (false): Alt+Enter submits,
+# plain Enter inserts a newline. When true: plain Enter submits and Shift+Enter
+# inserts a newline — this needs a terminal that supports the keyboard-
+# enhancement protocol (kitty, foot, ghostty, wezterm, recent alacritty…) so
+# Shift+Enter is distinguishable from Enter; elsewhere Shift+Enter just submits.
+submit_on_enter = false
 
 [columns]
 # "id" shows the shortest unique prefix (git/jj-style abbreviation), usable

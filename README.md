@@ -129,7 +129,7 @@ its embedded default:
 
 | File | Scope | Contents |
 |---|---|---|
-| `~/.config/tda/tui.toml` | TUI only | `[columns]` (order/visibility), `[schedule]` (hours/days used to project the `eta` column), `[status]` (enabled statuses, cycle order, glyphs, spinner), `[styles]` (colors and text styles), `[keybindings]` (action → key chords, e.g. `move_down = ["j", "down"]`), `[behavior]` (e.g. `chain_add = true` keeps the add-task dialog open at the same level after `alt+enter`, for fast batch entry; defaults to `false`) |
+| `~/.config/tda/tui.toml` | TUI only | `[columns]` (order/visibility), `[schedule]` (hours/days used to project the `eta` column), `[status]` (enabled statuses, cycle order, glyphs, spinner), `[styles]` (colors and text styles), `[keybindings]` (action → key chords, e.g. `move_down = ["j", "down"]`), `[behavior]` (`chain_add = true` keeps the add-task dialog open at the same level after `alt+enter`, for fast batch entry — defaults to `false`; `submit_on_enter = true` makes plain `enter` submit the add/input dialog and `shift+enter` insert a newline, needing a terminal with the keyboard-enhancement protocol — the default `false` keeps `alt+enter` = submit, `enter` = newline) |
 | `~/.config/tda/config.toml` | Cross-app (CLI + TUI) | `[workspaces]` — per-machine local-path overrides for `tda ws init` bindings, keyed by workspace name |
 
 `tui.toml`'s default, used as the template to copy from, lives at

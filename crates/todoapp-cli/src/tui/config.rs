@@ -180,6 +180,7 @@ struct RawStyles {
 #[derive(Debug, Default, Deserialize)]
 struct RawBehavior {
     chain_add: Option<bool>,
+    submit_on_enter: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -217,6 +218,10 @@ pub struct Config {
     pub selected_style: Style,
     /// Keep the add-task dialog open after Alt+Enter for rapid batch entry.
     pub chain_add: bool,
+    /// In the add/input dialog, plain Enter submits and Shift+Enter inserts a
+    /// newline (requires a terminal with the keyboard-enhancement protocol).
+    /// When false, the default holds: Alt+Enter submits, plain Enter = newline.
+    pub submit_on_enter: bool,
 }
 
 impl Config {
@@ -304,6 +309,10 @@ impl Config {
             .behavior
             .chain_add
             .context("default config missing behavior.chain_add")?;
+        let mut submit_on_enter = default
+            .behavior
+            .submit_on_enter
+            .context("default config missing behavior.submit_on_enter")?;
 
         if let Some(user) = user {
             let overrides = RawConfig::deserialize(user.clone()).context("parse user config")?;
@@ -351,6 +360,9 @@ impl Config {
             }
             if let Some(v) = overrides.behavior.chain_add {
                 chain_add = v;
+            }
+            if let Some(v) = overrides.behavior.submit_on_enter {
+                submit_on_enter = v;
             }
         }
 
@@ -435,6 +447,7 @@ impl Config {
             overdue_style,
             selected_style,
             chain_add,
+            submit_on_enter,
         })
     }
 }
