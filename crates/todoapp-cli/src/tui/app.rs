@@ -14,7 +14,7 @@ use tui_input::{Input, InputRequest};
 
 use crate::svc::{SystemClock, UlidGen, make_svc};
 use crate::tui::clipboard::Clipboard;
-use crate::tui::config::Config;
+use crate::tui::config::{ColumnKind, Config};
 use crate::tui::human_duration;
 use crate::tui::keymap::{Action, Keymap};
 use crate::tui::schedule::{project_finish_date, remaining_effort};
@@ -191,6 +191,14 @@ pub struct WsPicker {
     pub selected: usize,
 }
 
+/// Interactive visible-columns editor: the full column list with a `visible`
+/// flag per row (visibility = presence in the written order), `cursor` = the
+/// highlighted row. Applying it sets `config.columns` and writes `tui.toml`.
+pub struct ColumnsEditor {
+    pub rows: Vec<(ColumnKind, bool)>,
+    pub cursor: usize,
+}
+
 /// One row of the workspace editor dialog's `name | default path | override` table.
 pub struct WsRow {
     pub name: String,
@@ -245,6 +253,8 @@ pub struct AppState {
     pub ws_picker: Option<WsPicker>,
     /// Workspace management dialog, opened from the picker's "(new…)" entry.
     pub ws_editor: Option<WsEditor>,
+    /// Interactive visible-columns editor (toggle/reorder), if open.
+    pub columns_editor: Option<ColumnsEditor>,
     /// Active char-range selection on the current row's title (Tree/List),
     /// while in select mode (entered via `Action::Select`).
     pub selection: Option<Selection>,
@@ -445,6 +455,7 @@ impl AppState {
             edit_form: None,
             ws_picker: None,
             ws_editor: None,
+            columns_editor: None,
             selection: None,
             detail_shown: false,
             detail: None,
@@ -701,6 +712,9 @@ impl AppState {
         if self.ws_picker.is_some() {
             return self.handle_ws_picker_key(code).await;
         }
+        if self.columns_editor.is_some() {
+            return Ok(self.handle_columns_editor_key(code, modifiers));
+        }
         if self.edit_form.is_some() {
             return self.handle_edit_form_key(code, modifiers, width).await;
         }
@@ -952,9 +966,80 @@ impl AppState {
                 self.view = View::List(hits);
                 self.cursor = 0;
             }
+            Action::ConfigureColumns if in_tree => self.open_columns_editor(),
             _ => {}
         }
         Ok(true)
+    }
+
+    /// Opens the visible-columns editor: currently-shown columns first (in
+    /// their configured order, marked visible), then the rest marked hidden.
+    fn open_columns_editor(&mut self) {
+        let mut rows: Vec<(ColumnKind, bool)> =
+            self.config.columns.iter().map(|c| (*c, true)).collect();
+        for &kind in ColumnKind::VARIANTS {
+            if !self.config.columns.contains(&kind) {
+                rows.push((kind, false));
+            }
+        }
+        self.columns_editor = Some(ColumnsEditor { rows, cursor: 0 });
+    }
+
+    /// Key handling while the columns editor is open: up/down move the cursor,
+    /// space toggles visibility, alt+up/down reorder, esc/enter apply + close.
+    fn handle_columns_editor_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let Some(editor) = &mut self.columns_editor else {
+            return true;
+        };
+        let last = editor.rows.len().saturating_sub(1);
+        match code {
+            KeyCode::Up if modifiers.contains(KeyModifiers::ALT) => {
+                if editor.cursor > 0 {
+                    editor.rows.swap(editor.cursor, editor.cursor - 1);
+                    editor.cursor -= 1;
+                }
+            }
+            KeyCode::Down if modifiers.contains(KeyModifiers::ALT) => {
+                if editor.cursor < last {
+                    editor.rows.swap(editor.cursor, editor.cursor + 1);
+                    editor.cursor += 1;
+                }
+            }
+            KeyCode::Up => editor.cursor = editor.cursor.saturating_sub(1),
+            KeyCode::Down => editor.cursor = (editor.cursor + 1).min(last),
+            KeyCode::Char(' ') => {
+                let visible = &mut editor.rows[editor.cursor].1;
+                *visible = !*visible;
+            }
+            // Same submit chord as the add/edit dialogs: alt+enter by default,
+            // plain enter when `submit_on_enter` is set. Esc discards.
+            KeyCode::Enter if is_submit_chord(modifiers, self.config.submit_on_enter) => {
+                self.apply_columns_editor();
+            }
+            KeyCode::Esc => self.columns_editor = None,
+            _ => {}
+        }
+        true
+    }
+
+    /// Applies the columns editor: the visible columns (in editor order) become
+    /// `config.columns` and are written back to `tui.toml`. Best-effort write —
+    /// a failure surfaces as a status toast rather than aborting.
+    fn apply_columns_editor(&mut self) {
+        let Some(editor) = self.columns_editor.take() else {
+            return;
+        };
+        let visible: Vec<ColumnKind> = editor
+            .rows
+            .iter()
+            .filter(|(_, v)| *v)
+            .map(|(c, _)| *c)
+            .collect();
+        let names: Vec<&str> = visible.iter().map(|c| c.name()).collect();
+        self.config.columns = visible;
+        if let Err(e) = todoapp_config::set_tui_columns(&names) {
+            self.set_status(format!("could not save columns: {e}"));
+        }
     }
 
     /// Key handling while `selection` is active: h/l/Left/Right move+extend
@@ -1888,6 +1973,46 @@ pub(crate) mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// `z` opens the columns editor seeded from the visible columns; `space`
+    /// toggles a row's visibility and `alt+down` reorders the cursor row past
+    /// its neighbour. Applying uses the same submit chord as the add/edit
+    /// dialogs — plain `enter` (default config) is ignored, `alt+enter` applies.
+    /// The test stops at the ignored plain-`enter` so it writes no file;
+    /// persistence of the applied order is covered by `todoapp_config`'s
+    /// `columns_tests`.
+    #[tokio::test]
+    async fn columns_editor_toggles_and_reorders() {
+        let mut app = new_app().await;
+        let before = app.config.columns.clone();
+        assert_eq!(before[0], ColumnKind::Status);
+
+        app.handle_event(press_char('z'), TERM_WIDTH).await.unwrap();
+        let editor = app.columns_editor.as_ref().unwrap();
+        // Seeded with the full menu, visible ones first and marked visible.
+        assert_eq!(editor.rows.len(), ColumnKind::VARIANTS.len());
+        assert_eq!(editor.rows[0], (ColumnKind::Status, true));
+
+        // Hide status (cursor starts at row 0).
+        app.handle_event(press(KeyCode::Char(' '), KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        // Move the (now hidden) status row down one slot; cursor follows it.
+        app.handle_event(press(KeyCode::Down, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+
+        let editor = app.columns_editor.as_ref().unwrap();
+        assert_eq!(editor.cursor, 1);
+        assert_eq!(editor.rows[0], (before[1], true)); // "due" now leads
+        assert_eq!(editor.rows[1], (ColumnKind::Status, false)); // hidden + moved
+
+        // Plain Enter is not the submit chord in default config — editor stays.
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.columns_editor.is_some());
     }
 
     async fn type_str(app: &mut AppState, s: &str) {

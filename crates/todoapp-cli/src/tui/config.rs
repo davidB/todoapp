@@ -132,11 +132,33 @@ impl ColumnKind {
         ("id", ColumnKind::Id, "id"),
     ];
 
+    /// Every column variant, in canonical order — the full menu the
+    /// interactive column editor starts from.
+    pub const VARIANTS: &'static [ColumnKind] = &[
+        ColumnKind::Status,
+        ColumnKind::Due,
+        ColumnKind::Eta,
+        ColumnKind::Assignee,
+        ColumnKind::Estimate,
+        ColumnKind::Elapsed,
+        ColumnKind::Tags,
+        ColumnKind::Id,
+    ];
+
     fn from_name(name: &str) -> Option<ColumnKind> {
         Self::ALL
             .iter()
             .find(|(n, _, _)| *n == name)
             .map(|(_, c, _)| *c)
+    }
+
+    /// The config-file name (inverse of [`from_name`]) — used to write the
+    /// column order back to `tui.toml`.
+    pub fn name(self) -> &'static str {
+        Self::ALL
+            .iter()
+            .find(|(_, c, _)| *c == self)
+            .map_or("", |(n, _, _)| *n)
     }
 
     pub fn header(self) -> &'static str {

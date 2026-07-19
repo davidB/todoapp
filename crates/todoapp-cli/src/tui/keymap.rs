@@ -46,6 +46,7 @@ pub enum Action {
     ToggleMark,
     MoveMarked,
     ClearInput,
+    ConfigureColumns,
 }
 
 impl Action {
@@ -128,6 +129,11 @@ impl Action {
             "clear_input",
             Action::ClearInput,
             "clear the input field (in a dialog)",
+        ),
+        (
+            "configure_columns",
+            Action::ConfigureColumns,
+            "configure visible columns + order",
         ),
     ];
 

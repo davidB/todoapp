@@ -82,6 +82,34 @@ pub fn set_workspace_override(name: &str, path: Option<&str>) -> anyhow::Result<
     set_override_at(&config_path(), name, path)
 }
 
+/// Writes `[columns].order` in `tui.toml`, creating file/table if absent.
+/// Uses `toml_edit` so the rest of the file (keymap, status, styles, comments)
+/// round-trips untouched — the interactive column editor's write-back.
+pub fn set_tui_columns(order: &[&str]) -> anyhow::Result<()> {
+    set_columns_at(&tui_config_path(), order)
+}
+
+fn set_columns_at(file_path: &Path, order: &[&str]) -> anyhow::Result<()> {
+    let existing = std::fs::read_to_string(file_path).unwrap_or_default();
+    let mut doc = existing
+        .parse::<toml_edit::DocumentMut>()
+        .context("parse tui.toml")?;
+
+    if !doc.contains_key("columns") {
+        doc["columns"] = toml_edit::table();
+    }
+    let mut arr = toml_edit::Array::new();
+    for name in order {
+        arr.push(*name);
+    }
+    doc["columns"]["order"] = toml_edit::value(arr);
+
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).context("create config directory")?;
+    }
+    std::fs::write(file_path, doc.to_string()).context("write tui.toml")
+}
+
 fn set_override_at(file_path: &Path, name: &str, path: Option<&str>) -> anyhow::Result<()> {
     let existing = std::fs::read_to_string(file_path).unwrap_or_default();
     let mut doc = existing
@@ -193,5 +221,42 @@ mod override_tests {
         let result = std::fs::read_to_string(&file).unwrap();
         assert!(result.contains("[workspaces]"));
         assert!(result.contains("proj = \"/x\""));
+    }
+}
+
+#[cfg(test)]
+mod columns_tests {
+    use super::set_columns_at;
+
+    #[test]
+    fn round_trip_preserves_other_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("tui.toml");
+        std::fs::write(
+            &file,
+            "# a user comment\n[columns]\norder = [\"status\", \"id\"]\n\n[keybindings]\nquit = [\"q\"]\n",
+        )
+        .unwrap();
+
+        set_columns_at(&file, &["due", "status"]).unwrap();
+
+        let result = std::fs::read_to_string(&file).unwrap();
+        assert!(result.contains("# a user comment"));
+        assert!(result.contains("quit = [\"q\"]"));
+        assert!(result.contains(r#"order = ["due", "status"]"#), "{result}");
+    }
+
+    #[test]
+    fn creates_table_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("tui.toml");
+        // File exists but has no [columns] table.
+        std::fs::write(&file, "[keybindings]\nquit = [\"q\"]\n").unwrap();
+
+        set_columns_at(&file, &["status", "due"]).unwrap();
+
+        let result = std::fs::read_to_string(&file).unwrap();
+        assert!(result.contains("[columns]"));
+        assert!(result.contains(r#"order = ["status", "due"]"#), "{result}");
     }
 }

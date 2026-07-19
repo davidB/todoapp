@@ -15,8 +15,8 @@ use ratatui::{
 use todoapp_core::Status;
 
 use crate::tui::app::{
-    AppState, DetailPane, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD, View,
-    VisibleItem, WsEditor, WsPicker,
+    AppState, ColumnsEditor, DetailPane, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD,
+    View, VisibleItem, WsEditor, WsPicker,
 };
 use crate::tui::config::{ColumnKind, Config, Semantic};
 use crate::tui::keymap::{Action, Keymap};
@@ -62,6 +62,9 @@ pub fn render(f: &mut Frame, app: &AppState) {
     }
     if let Some(editor) = &app.ws_editor {
         render_ws_editor(f, area, editor);
+    }
+    if let Some(editor) = &app.columns_editor {
+        render_columns_editor(f, area, editor);
     }
     if matches!(app.view, View::Help) {
         render_help(f, area, &app.keymap);
@@ -886,6 +889,32 @@ fn render_ws_picker(f: &mut Frame, area: Rect, picker: &WsPicker) {
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
     let mut state = ListState::default().with_selected(Some(picker.selected));
+    f.render_widget(Clear, popup);
+    f.render_stateful_widget(list, popup, &mut state);
+}
+
+/// The visible-columns editor: every column with an `[x]`/`[ ]` visibility box,
+/// in the order they'll render. The cursor row is highlighted; space toggles,
+/// alt+↑/↓ reorders, esc/enter saves back to `tui.toml`.
+fn render_columns_editor(f: &mut Frame, area: Rect, editor: &ColumnsEditor) {
+    let height = u16::try_from(editor.rows.len() + 2).unwrap_or(u16::MAX);
+    let popup = centered_rect(area, 50, height);
+    let items: Vec<ListItem> = editor
+        .rows
+        .iter()
+        .map(|(kind, visible)| {
+            let mark = if *visible { 'x' } else { ' ' };
+            ListItem::new(format!("[{mark}] {}", kind.header()))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" columns (space toggle · alt+↑/↓ move · alt+enter apply · esc cancel) "),
+        )
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut state = ListState::default().with_selected(Some(editor.cursor));
     f.render_widget(Clear, popup);
     f.render_stateful_widget(list, popup, &mut state);
 }
