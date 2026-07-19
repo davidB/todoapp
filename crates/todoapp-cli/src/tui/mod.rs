@@ -7,6 +7,7 @@ mod human_duration;
 mod keymap;
 mod markdown;
 mod schedule;
+mod state;
 mod text_edit;
 mod ui;
 
@@ -40,7 +41,11 @@ pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
 
     let clipboard: Box<dyn Clipboard> = Box::new(SystemClipboard::new());
 
+    let restore_state = config.restore_state;
     let mut app = AppState::new(store, keymap, config, clipboard).await?;
+    if restore_state {
+        app.restore(state::load(&db_path)).await;
+    }
     let mut terminal = ratatui::init();
     // `submit_on_enter` needs Shift+Enter distinguishable from Enter, which
     // only the keyboard-enhancement protocol provides. Push the disambiguation
@@ -48,6 +53,9 @@ pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
     // just reads as Enter and submits).
     let pushed_kbd_flags = app.config.submit_on_enter && push_keyboard_flags();
     let result = run_loop(&mut terminal, &mut app, &db_path).await;
+    if restore_state {
+        state::save(&db_path, &app.ui_state());
+    }
     if pushed_kbd_flags {
         let _ = crossterm::execute!(
             std::io::stdout(),

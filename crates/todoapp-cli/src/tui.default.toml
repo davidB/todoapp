@@ -14,6 +14,11 @@ chain_add = false
 # enhancement protocol (kitty, foot, ghostty, wezterm, recent alacritty…) so
 # Shift+Enter is distinguishable from Enter; elsewhere Shift+Enter just submits.
 submit_on_enter = false
+# Remember the tree's expansion, cursor, and whether the details pane is open
+# across runs: reload them on launch and save them on exit (tui.state.json, next
+# to the db). Set false to always start fully collapsed at the top. List/search/
+# help views aren't restored — restore always lands in the tree.
+restore_state = true
 
 [columns]
 # "id" shows the shortest unique prefix (git/jj-style abbreviation), usable

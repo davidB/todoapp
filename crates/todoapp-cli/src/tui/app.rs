@@ -459,6 +459,30 @@ impl AppState {
         Ok(app)
     }
 
+    /// Re-apply a persisted session (tree expansion + cursor), then rebuild so
+    /// the restored expansion takes effect and the cursor lands on its saved
+    /// task if it still exists. See [`crate::tui::state`].
+    pub async fn restore(&mut self, state: crate::tui::state::UiState) {
+        self.expanded = state.expanded;
+        self.detail_shown = state.detail_shown;
+        self.rebuild().await;
+        if let Some(id) = state.cursor
+            && let Some(pos) = self.items.iter().position(|i| i.id == id)
+        {
+            self.cursor = pos;
+        }
+        self.refresh_detail().await;
+    }
+
+    /// Snapshot the durable UI state for [`crate::tui::state::save`].
+    pub fn ui_state(&self) -> crate::tui::state::UiState {
+        crate::tui::state::UiState {
+            expanded: self.expanded.clone(),
+            cursor: self.cursor_id(),
+            detail_shown: self.detail_shown,
+        }
+    }
+
     pub async fn rebuild(&mut self) {
         let new_items = build_visible_items(
             &self.store,
@@ -2536,6 +2560,42 @@ pub(crate) mod tests {
 
         let snap = save_edit_form(&mut app, &task_id).await;
         assert_eq!(snap.workspace, Some(ws));
+    }
+
+    #[tokio::test]
+    async fn restore_reapplies_expansion_and_cursor() {
+        let mut app = new_app().await;
+        let (root_id, child_id) = {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            let root = svc.create("Root", None, Status::Todo, []).await.unwrap();
+            let child = svc
+                .create("Child", Some(&root.id), Status::Todo, [])
+                .await
+                .unwrap();
+            (root.id, child.id)
+        };
+        // Collapsed by default: only the root is visible, cursor at the top.
+        app.rebuild().await;
+        assert_eq!(app.items.len(), 1);
+
+        let mut state = crate::tui::state::UiState::default();
+        state.expanded.insert(root_id);
+        state.cursor = Some(child_id.clone());
+        state.detail_shown = true;
+        app.restore(state).await;
+
+        // Root expanded (child now visible), cursor on the child, pane restored.
+        assert_eq!(app.items.len(), 2);
+        assert_eq!(app.cursor_id(), Some(child_id));
+        assert!(app.detail_shown);
+
+        // A stale cursor id (deleted since) is ignored — the cursor stays put
+        // rather than jumping, and nothing panics.
+        let before = app.cursor;
+        let mut gone = app.ui_state();
+        gone.cursor = Some(Id::new("does-not-exist"));
+        app.restore(gone).await;
+        assert_eq!(app.cursor, before);
     }
 
     #[tokio::test]

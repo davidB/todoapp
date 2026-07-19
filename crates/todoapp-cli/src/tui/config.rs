@@ -181,6 +181,7 @@ struct RawStyles {
 struct RawBehavior {
     chain_add: Option<bool>,
     submit_on_enter: Option<bool>,
+    restore_state: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -222,6 +223,10 @@ pub struct Config {
     /// newline (requires a terminal with the keyboard-enhancement protocol).
     /// When false, the default holds: Alt+Enter submits, plain Enter = newline.
     pub submit_on_enter: bool,
+    /// Reload the last session's tree expansion, cursor, and details-pane
+    /// visibility on launch, and save them on exit (`tui.state.json` next to
+    /// the db). On by default.
+    pub restore_state: bool,
 }
 
 impl Config {
@@ -313,6 +318,10 @@ impl Config {
             .behavior
             .submit_on_enter
             .context("default config missing behavior.submit_on_enter")?;
+        let mut restore_state = default
+            .behavior
+            .restore_state
+            .context("default config missing behavior.restore_state")?;
 
         if let Some(user) = user {
             let overrides = RawConfig::deserialize(user.clone()).context("parse user config")?;
@@ -363,6 +372,9 @@ impl Config {
             }
             if let Some(v) = overrides.behavior.submit_on_enter {
                 submit_on_enter = v;
+            }
+            if let Some(v) = overrides.behavior.restore_state {
+                restore_state = v;
             }
         }
 
@@ -448,6 +460,7 @@ impl Config {
             selected_style,
             chain_add,
             submit_on_enter,
+            restore_state,
         })
     }
 }
