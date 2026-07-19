@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0] - 2026-07-19
+
+### Features
+
+- Configure visible columns from the TUI, synced to tui.toml ([534b811](https://github.com/davidB/todoapp/commit/534b8114188a060ac1163796e12d9fbc38b23604))
+
+
 ## [0.6.0] - 2026-07-15
 
 

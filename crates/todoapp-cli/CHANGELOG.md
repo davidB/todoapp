@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.7.0] - 2026-07-19
+
+### Bug Fixes
+
+- Don't drop typed text on alt+right/left in add dialog ([fa667e0](https://github.com/davidB/todoapp/commit/fa667e08b3f6865fc3d7122f18cb90524eb23e0d))
+
+### Documentation
+
+- Document add-dialog scratchpad and clear_input key ([efc7053](https://github.com/davidB/todoapp/commit/efc705369a667c6a54a774c0f14f2bf3318ea32c))
+
+### Features
+
+- Configure visible columns from the TUI, synced to tui.toml ([534b811](https://github.com/davidB/todoapp/commit/534b8114188a060ac1163796e12d9fbc38b23604))
+- Remember session state (expansion, cursor, details pane) ([e0834e2](https://github.com/davidB/todoapp/commit/e0834e21f35ba3ec3959b25f0536270c13fb6c81))
+- Keep cancelled add-task draft as scratchpad + clear_input key ([10b307c](https://github.com/davidB/todoapp/commit/10b307c7fbd274d22c43b26624f556d6be074ae7))
+- Add submit_on_enter option for the add/input dialog ([e7a17be](https://github.com/davidB/todoapp/commit/e7a17be27def3437170ccedbf64351ad26ce0f61))
+- Multi-select tasks for batch operations ([f7af3f8](https://github.com/davidB/todoapp/commit/f7af3f854a8b42a3a93ff3f5465a31b965c3016c))
+
+
 ## [0.6.0] - 2026-07-15
 
 ### Documentation
