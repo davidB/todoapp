@@ -35,6 +35,17 @@ impl Id {
     pub fn is_root(&self) -> bool {
         self.0 == "__root__"
     }
+    /// True if `self` is `ancestor` or a `/`-delimited descendant of it, e.g.
+    /// actor `harness/model` is `is_or_under("harness")`. Lets a specific actor
+    /// claim / see tasks assigned to a broader identity (spec §2 hierarchical
+    /// assignee): assign the harness, let it pick the model.
+    pub fn is_or_under(&self, ancestor: &Id) -> bool {
+        self == ancestor
+            || self
+                .0
+                .strip_prefix(&ancestor.0)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
     /// Content-addressed id for a blob: same bytes ⇒ same id (cheap incidental
     /// dedup, not a content-hash identity guarantee — collisions are possible
     /// but not a practical concern at this scale). Shared by every `BlobStore`
@@ -584,6 +595,21 @@ pub enum Dir {
 pub struct SortKey {
     pub key: SortField,
     pub dir: Dir,
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn is_or_under_hierarchy() {
+        let actor = Id::new("harness/model");
+        assert!(actor.is_or_under(&Id::new("harness"))); // broader assignee
+        assert!(actor.is_or_under(&Id::new("harness/model"))); // exact
+        assert!(!actor.is_or_under(&Id::new("harness/other")));
+        assert!(!actor.is_or_under(&Id::new("harnes"))); // prefix, not a segment
+        assert!(!Id::new("harness").is_or_under(&Id::new("harness/model"))); // not upward
+    }
 }
 
 #[cfg(test)]

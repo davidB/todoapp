@@ -820,9 +820,15 @@ impl QueryEngine for TursoStore {
             }
         }
         if let Some(a) = &filter.assignee {
+            // Match the exact assignee or any broader ancestor `x` of a
+            // `x/y`-style actor (see Id::is_or_under). substr avoids LIKE
+            // metachar escaping on user-provided actor ids.
             clauses.push(
-                "EXISTS (SELECT 1 FROM c_assignment WHERE task_id=t.id AND actor_id=?)".into(),
+                "EXISTS (SELECT 1 FROM c_assignment WHERE task_id=t.id \
+                 AND (actor_id=? OR substr(?, 1, length(actor_id)+1) = actor_id || '/'))"
+                    .into(),
             );
+            params.push(text(a.0.clone()));
             params.push(text(a.0.clone()));
         }
         if let Some(claimed) = filter.claimed {

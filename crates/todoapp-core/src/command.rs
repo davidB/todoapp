@@ -308,7 +308,7 @@ async fn g_claim_rules<St: ComponentStore>(store: &St, id: &Id, cmd: &Command) -
             return Some(Denied("claim allowed only from todo".into()));
         }
         let asg = store.get::<Assignments>(id).await.unwrap_or_default();
-        if !asg.0.is_empty() && !asg.0.iter().any(|a| &a.actor == actor) {
+        if !asg.0.is_empty() && !asg.0.iter().any(|a| actor.is_or_under(&a.actor)) {
             return Some(Denied("claim restricted to assignees".into()));
         }
     }

@@ -90,7 +90,10 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         let mut out = Vec::new();
         for h in self.what_next_for(None, within, tag).await {
             let allowed = h.task.assignments.is_empty()
-                || h.task.assignments.iter().any(|a| &a.actor == actor);
+                || h.task
+                    .assignments
+                    .iter()
+                    .any(|a| actor.is_or_under(&a.actor));
             if allowed && !self.is_blocked(&h.task.id).await {
                 out.push(h);
             }

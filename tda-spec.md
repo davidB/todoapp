@@ -89,7 +89,7 @@ Grouped and given IDs so the roadmap can reference them.
 **Status & delegation**
 - `FR-9` Status values `draft, todo, wip, paused, done` (see [§8](#8-status-lifecycle)); `[DECISION]` `SetStatus` accepts any value, no transition guard — a person may drop straight back from `wip` to `draft`, for instance. `draft` is not claimable.
 - `FR-10` 0–n assignees per task via the optional `Assignment` capability; assignee may be a Person or an Agent.
-- `FR-11` `Claim`: from `todo` only; open to anyone if no assignees, else assignee-only (per the `Assignment` capability).
+- `FR-11` `Claim`: from `todo` only; open to anyone if no assignees, else assignee-only (per the `Assignment` capability). `[DECISION]` assignees are **hierarchical** with `/`: an actor `x/y` satisfies an assignment to `x` (or to `x/y` exactly), so a task may be assigned to a broad identity (e.g. a harness) and claimed/queried by a more specific one (e.g. the model it picked). Matching is one-directional (a specific actor covers a broader assignment, never the reverse) and applies equally to `Claim`, `what-next-for`, and `claimable-for`.
 - `FR-12` A parent task supplies context (its title/notes/path) to an assignee working a child.
 
 **Aggregation & views**
@@ -354,7 +354,7 @@ derived:  blocked = ∃ a `blocks` dependency whose blocker is not `done`.
 **Claim rule (`FR-11`), driven by the `Assignment` capability** — *closes the earlier open question*:
 - allowed only from `todo`;
 - if the task has **no** `Assignment` / zero assignees → anyone may claim, and claiming adds the claimer as assignee;
-- if it **has** assignees → only a listed assignee may claim;
+- if it **has** assignees → only a listed assignee may claim, where a `/`-delimited actor `x/y` counts as the assignee `x` (hierarchical match, `FR-11`);
 - on success: set claimed, status → `wip`.
 
 The `blocked` badge is informational by default. Whether it should *hard-deny* `start` is a guard toggle — see [§13](#13-open-questions).

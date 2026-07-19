@@ -73,7 +73,7 @@ where
     if f.assignee.is_some() || f.claimed.is_some() {
         let asg = store.get::<Assignments>(id).await.unwrap_or_default().0;
         if let Some(a) = &f.assignee
-            && !asg.iter().any(|x| &x.actor == a)
+            && !asg.iter().any(|x| a.is_or_under(&x.actor))
         {
             return false;
         }
