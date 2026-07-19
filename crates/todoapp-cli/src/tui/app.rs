@@ -233,6 +233,9 @@ pub struct AppState {
     pub view: View,
     /// Active input modal: (mode, typed text).
     pub input: Option<(InputMode, Input)>,
+    /// Draft kept from a cancelled add dialog, used to seed the next one.
+    /// Consumed (cleared) on a successful add submit. In-memory only.
+    pub scratchpad: String,
     /// Pending delete confirmation: the marked root ids to delete (each with
     /// `recursive=true`). A single-cursor delete is just a one-element list.
     pub confirm_delete: Option<Vec<Id>>,
@@ -437,6 +440,7 @@ impl AppState {
             marked: HashSet::new(),
             view: View::Tree,
             input: None,
+            scratchpad: String::new(),
             confirm_delete: None,
             edit_form: None,
             ws_picker: None,
@@ -774,7 +778,7 @@ impl AppState {
             }
             // Add root task (tree only)
             Action::AddRoot if in_tree => {
-                self.input = Some((InputMode::AddRoot, Input::default()));
+                self.input = Some((InputMode::AddRoot, self.scratch_input()));
             }
             // Edit task (title/notes/due/estimate/assignee) — tree only
             Action::EditTitle if in_tree => {
@@ -1018,6 +1022,31 @@ impl AppState {
             return Ok(true);
         }
 
+        // Cancel: keep the add draft as a scratchpad to seed the next add
+        // dialog (saving even an empty field means "clear + Esc" wipes it).
+        // Handled before the `&mut input` borrow to avoid a `self.scratchpad`
+        // borrow conflict.
+        if code == KeyCode::Esc {
+            if let Some((mode, input)) = self.input.take()
+                && matches!(mode, InputMode::AddChild(_) | InputMode::AddRoot)
+            {
+                self.scratchpad = input.value().to_string();
+            }
+            return Ok(true);
+        }
+
+        // Clear the whole input buffer in one keystroke (configurable, default
+        // ctrl+d). Any input mode.
+        if matches!(
+            self.keymap.lookup(code, modifiers),
+            Some(Action::ClearInput)
+        ) {
+            if let Some((_, input)) = self.input.as_mut() {
+                *input = Input::default();
+            }
+            return Ok(true);
+        }
+
         let Some((_, input)) = &mut self.input else {
             return Ok(true);
         };
@@ -1044,7 +1073,6 @@ impl AppState {
             KeyCode::Enter => {
                 input.handle(InputRequest::InsertChar('\n'));
             }
-            KeyCode::Esc => self.input = None,
             KeyCode::Up => text_edit::move_visual_up(input, width),
             KeyCode::Down => text_edit::move_visual_down(input, width),
             KeyCode::Home => {
@@ -1075,6 +1103,10 @@ impl AppState {
     }
 
     async fn submit_input(&mut self, mode: InputMode, text: String) -> anyhow::Result<()> {
+        // A successful add consumes the scratchpad draft.
+        if matches!(mode, InputMode::AddChild(_) | InputMode::AddRoot) {
+            self.scratchpad.clear();
+        }
         let initial_status = self
             .config
             .status_order
@@ -1427,16 +1459,23 @@ impl AppState {
     /// root task if the cursor has no parent / the list is empty). Also used
     /// to reopen/retarget the dialog after a chained submit or a depth shift.
     async fn open_add_sibling(&mut self) {
+        let input = self.scratch_input();
         self.input = Some(match self.cursor_id() {
             Some(id) => {
                 let svc = make_svc(&self.store, &self.clock, &self.ids);
                 match svc.parent_of(&id).await {
-                    Some(parent_id) => (InputMode::AddChild(parent_id), Input::default()),
-                    None => (InputMode::AddRoot, Input::default()),
+                    Some(parent_id) => (InputMode::AddChild(parent_id), input),
+                    None => (InputMode::AddRoot, input),
                 }
             }
-            None => (InputMode::AddRoot, Input::default()),
+            None => (InputMode::AddRoot, input),
         });
+    }
+
+    /// A fresh add-dialog input seeded with the scratchpad draft (empty ⇒
+    /// same as `Input::default()`), cursor at end.
+    fn scratch_input(&self) -> Input {
+        Input::new(self.scratchpad.clone())
     }
 
     /// Reparent the cursor task under the sibling immediately above it (indent).
@@ -2031,6 +2070,87 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(app.input.is_none());
+    }
+
+    /// Cancelling (Esc) an add dialog keeps the typed text as a scratchpad,
+    /// which seeds the next add dialog instead of starting empty.
+    #[tokio::test]
+    async fn cancelled_add_draft_is_kept_and_seeds_next_dialog() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "draft").await;
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert!(app.input.is_none(), "Esc closes the dialog");
+        assert_eq!(app.scratchpad, "draft", "draft kept on cancel");
+
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "draft", "next dialog seeded with the draft");
+    }
+
+    /// A successful add consumes the scratchpad, so the next (or chained)
+    /// dialog starts empty.
+    #[tokio::test]
+    async fn submit_consumes_scratchpad() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "Task").await;
+        app.handle_event(press(KeyCode::Enter, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.scratchpad, "", "submit clears the scratchpad");
+
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "", "reopened dialog is empty after submit");
+    }
+
+    /// Clearing the field then Esc leaves an empty scratchpad — a free "clear
+    /// the draft".
+    #[tokio::test]
+    async fn clear_field_then_esc_wipes_scratchpad() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "stale").await;
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.scratchpad, "stale");
+
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap(); // seeded "stale"
+        app.handle_event(press(KeyCode::Char('d'), KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap(); // clear_input
+        app.handle_event(press(KeyCode::Esc, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.scratchpad, "", "cleared field + Esc wipes the draft");
+    }
+
+    /// `clear_input` (default ctrl+d) empties the whole buffer in one keystroke
+    /// without closing the dialog; the chord is read live from the keymap.
+    #[tokio::test]
+    async fn clear_input_key_empties_field() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "hello world").await;
+        app.handle_event(press(KeyCode::Char('d'), KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "", "ctrl+d clears the buffer");
+
+        // Rebound chord (ctrl+l) drives the same clear.
+        let mut app = new_app_with(Some("[keybindings]\nclear_input = [\"ctrl+l\"]\n"), None).await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap();
+        type_str(&mut app, "hello").await;
+        app.handle_event(press(KeyCode::Char('l'), KeyModifiers::CONTROL), TERM_WIDTH)
+            .await
+            .unwrap();
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "", "rebound clear_input works");
     }
 
     /// Alt+Right/Alt+Left inside the add dialog is a macro: it *submits* the

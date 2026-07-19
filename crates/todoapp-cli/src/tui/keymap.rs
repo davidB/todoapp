@@ -45,6 +45,7 @@ pub enum Action {
     Delete,
     ToggleMark,
     MoveMarked,
+    ClearInput,
 }
 
 impl Action {
@@ -122,6 +123,11 @@ impl Action {
             "move_marked",
             Action::MoveMarked,
             "move marked branches under the cursor task",
+        ),
+        (
+            "clear_input",
+            Action::ClearInput,
+            "clear the input field (in a dialog)",
         ),
     ];
 
