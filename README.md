@@ -103,6 +103,11 @@ Run `tda` with no subcommand (or `tda tui`) and the binary — built from
 | `?` | toggle help |
 | `esc` | clear selection · quit / back |
 
+**Add dialog.** Cancelling the add-task dialog with `esc` keeps the typed text as
+an in-memory scratchpad that pre-fills the next add dialog, so a mistaken cancel
+is recoverable; a successful submit consumes it. `ctrl+d` clears the whole input
+field in one keystroke.
+
 **Batch selection.** Press `m` to mark a task and its entire subtree (works even
 when collapsed); marked rows show a gutter marker. With marks active, the
 field ops (`space` cycle status, `c` claim, `s` assign) apply to *every* marked
