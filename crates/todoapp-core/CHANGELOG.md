@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0] - 2026-07-19
+
+### Features
+
+- Hierarchical assignee matching (x/y claims x) ([f9ed184](https://github.com/davidB/todoapp/commit/f9ed1846cc9a344aa48fd6f60ba45a7a3322f485))
+
+
 ## [0.6.0] - 2026-07-15
 
 
