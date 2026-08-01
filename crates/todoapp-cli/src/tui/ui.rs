@@ -300,6 +300,7 @@ fn render_column(item: &VisibleItem, kind: ColumnKind, app: &AppState) -> Cell<'
 }
 
 const PROGRESS_BAR_WIDTH: usize = 6;
+const PROGRESS_BAR_ITEM: &str = "⠿"; //"•"; //https://unicodeplus.com/
 
 /// A small `[######] d/t` progress bar: one proportional segment per
 /// `Status` in the subtree, ordered Done..Draft (finished work at the left),
@@ -313,7 +314,10 @@ fn progress_bar(
     config: &Config,
 ) -> Line<'static> {
     if total == 0 {
-        return Line::from(format!("{} {done}/{total}", "░".repeat(PROGRESS_BAR_WIDTH)));
+        return Line::from(format!(
+            "{} {done}/{total}",
+            PROGRESS_BAR_ITEM.repeat(PROGRESS_BAR_WIDTH)
+        ));
     }
     let mut spans = Vec::new();
     for (status, width) in segment_widths(by_status, total, PROGRESS_BAR_WIDTH) {
@@ -321,7 +325,7 @@ fn progress_bar(
             continue;
         }
         spans.push(Span::styled(
-            "█".repeat(width),
+            PROGRESS_BAR_ITEM.repeat(width),
             config.style_for(Semantic::Glyph(status)),
         ));
     }
@@ -405,7 +409,7 @@ mod progress_bar_tests {
     fn progress_bar_empty_subtree_is_all_hollow() {
         let config = Config::load(None).unwrap();
         let line = progress_bar(&BTreeMap::new(), 0, 0, &config);
-        assert_eq!(line.to_string(), "░░░░░░ 0/0");
+        assert_eq!(line.to_string(), "⠿⠿⠿⠿⠿⠿ 0/0");
     }
 }
 
