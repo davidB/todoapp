@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1] - 2026-08-01
+
+### Performance
+
+- Batch aggregate reads into per-capability IN(...) queries ([a792b0a](https://github.com/davidB/todoapp/commit/a792b0ad61d546459c74fe6c60a6c1c50676720d))
+
+
 ## [0.7.0] - 2026-07-19
 
 ### Features

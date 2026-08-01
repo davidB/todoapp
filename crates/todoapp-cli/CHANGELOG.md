@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.1] - 2026-08-01
+
+### Bug Fixes
+
+- Stop rebuilding the whole tree on every sibling reorder step ([0b1b049](https://github.com/davidB/todoapp/commit/0b1b04988591edf78f9dd8d8c177d617ff8325d7))
+- Handle terminal paste via bracketed paste instead of raw keystrokes ([a4fbdb4](https://github.com/davidB/todoapp/commit/a4fbdb445a3212df822f075d63713ffdcfdf9cb1))
+
+### Performance
+
+- Patch status-cycle locally instead of full rebuild ([89458a8](https://github.com/davidB/todoapp/commit/89458a8e33fb839e7876d7579e7bdef8b41b54d9))
+
+
 ## [0.7.0] - 2026-07-19
 
 ### Bug Fixes
