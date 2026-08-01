@@ -7,8 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use todoapp_core::{
-    Assignments, ComponentStore, Due, Duration, Estimate, Id, Schedule, Status, TaskEntityStore,
-    TimeSpent,
+    Assignments, ComponentStore, Due, Duration, Id, Schedule, Status, TaskEntityStore,
 };
 
 use crate::service::{Error, Services};
@@ -57,10 +56,13 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
         // Each capability reads only its own component (spec §3 per-cap roll-up).
         let mut ids = self.descendants(id).await;
         ids.insert(id.clone());
+        // One bulk read per capability instead of one `get` per id per
+        // capability (`aggregate_reads` batches it at the store/adapter).
+        let reads = self.store.aggregate_reads(&ids).await;
         let mut worst: Option<Status> = None;
-        for tid in ids {
+        for tid in &ids {
             agg.total += 1;
-            let status = self.store.get::<Status>(&tid).await;
+            let status = reads.status.get(tid).copied();
             if status == Some(Status::Done) {
                 agg.done += 1;
             }
@@ -70,28 +72,20 @@ impl<'a, St: ComponentStore + TaskEntityStore> Services<'a, St> {
                 Some(w) if w.rank() <= status.rank() => w,
                 _ => status,
             });
-            agg.time_spent += self
-                .store
-                .get::<TimeSpent>(&tid)
-                .await
-                .map_or(Duration::ZERO, |t| t.0);
-            let estimate = self
-                .store
-                .get::<Estimate>(&tid)
-                .await
-                .map_or(Duration::ZERO, |e| e.0);
+            agg.time_spent += reads.time_spent.get(tid).map_or(Duration::ZERO, |t| t.0);
+            let estimate = reads.estimate.get(tid).map_or(Duration::ZERO, |e| e.0);
             agg.estimate += estimate;
             if status != Status::Done {
                 agg.remaining += estimate;
             }
-            if let Some(Schedule(due)) = self.store.get::<Schedule>(&tid).await {
+            if let Some(Schedule(due)) = reads.schedule.get(tid) {
                 agg.earliest_due = Some(match agg.earliest_due.take() {
-                    Some(cur) if cur <= due => cur,
-                    _ => due,
+                    Some(cur) if cur <= *due => cur,
+                    _ => *due,
                 });
             }
-            if let Some(Assignments(asg)) = self.store.get::<Assignments>(&tid).await {
-                agg.assignees.extend(asg.into_iter().map(|a| a.actor));
+            if let Some(Assignments(asg)) = reads.assignments.get(tid) {
+                agg.assignees.extend(asg.iter().map(|a| a.actor.clone()));
             }
         }
         agg.progress = if agg.total > 0 {

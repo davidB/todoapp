@@ -12,12 +12,13 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use todoapp_core::{
-    BlobStore, Collection, CollectionRepository, Component, ComponentStore, Date, Filter, Id, Link,
-    LinkKind, LinkRepository, QueryEngine, TaskEntityStore, Timestamp, select_matching,
+    AggregateReads, Assignments, BlobStore, Collection, CollectionRepository, Component,
+    ComponentStore, Date, Estimate, Filter, Id, Link, LinkKind, LinkRepository, QueryEngine,
+    Schedule, Status, TaskEntityStore, TimeSpent, Timestamp, select_matching,
 };
 
 /// Every capability component, type-erased and keyed by `(Component::NAME, id)`.
@@ -62,6 +63,29 @@ impl ComponentStore for MemStore {
             .filter(|((name, _), _)| *name == C::NAME)
             .filter_map(|((_, id), b)| b.downcast_ref::<C>().cloned().map(|c| (id.clone(), c)))
             .collect()
+    }
+    // ponytail: no round trip to save here (in-process `RefCell`) — a plain
+    // loop over the existing per-id `get`, unlike the batched-SQL Turso impl.
+    async fn aggregate_reads(&self, ids: &HashSet<Id>) -> AggregateReads {
+        let mut reads = AggregateReads::default();
+        for id in ids {
+            if let Some(v) = ComponentStore::get::<Status>(self, id).await {
+                reads.status.insert(id.clone(), v);
+            }
+            if let Some(v) = ComponentStore::get::<TimeSpent>(self, id).await {
+                reads.time_spent.insert(id.clone(), v);
+            }
+            if let Some(v) = ComponentStore::get::<Estimate>(self, id).await {
+                reads.estimate.insert(id.clone(), v);
+            }
+            if let Some(v) = ComponentStore::get::<Schedule>(self, id).await {
+                reads.schedule.insert(id.clone(), v);
+            }
+            if let Some(v) = ComponentStore::get::<Assignments>(self, id).await {
+                reads.assignments.insert(id.clone(), v);
+            }
+        }
+        reads
     }
 }
 

@@ -7,11 +7,14 @@
 //! ports otherwise pay); the tree-priority sort + breadcrumbs stay link-walks in
 //! `todoapp-app`. Push the sort into a recursive CTE only if it shows up hot.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use todoapp_core::{
-    BlobStore, Collection, CollectionKind, CollectionRepository, Component, ComponentStore, Date,
-    DueFilter, Filter, Id, Link, LinkKind, LinkRepository, Position, Query, QueryEngine, Status,
-    TaskEntityStore, Timestamp,
+    AggregateReads, Assignment, Assignments, BlobStore, Collection, CollectionKind,
+    CollectionRepository, Component, ComponentStore, Date, DueFilter, Estimate, Filter, Id, Link,
+    LinkKind, LinkRepository, Position, Query, QueryEngine, Schedule, Status, TaskEntityStore,
+    TimeSpent, Timestamp,
 };
 use turso::Value;
 
@@ -553,6 +556,85 @@ impl ComponentStore for TursoStore {
             }
         }
         out
+    }
+
+    /// One `WHERE task_id IN (...)` query per capability instead of the
+    /// `5 * ids.len()` single-id `get`s `aggregate()` would otherwise need —
+    /// see `ComponentStore::aggregate_reads`. Same JSON decode as `get`'s
+    /// per-capability arms, just batched.
+    async fn aggregate_reads(&self, ids: &HashSet<Id>) -> AggregateReads {
+        let mut reads = AggregateReads::default();
+        if ids.is_empty() {
+            return reads;
+        }
+        let holes = vec!["?"; ids.len()].join(",");
+        let params = || -> Vec<Value> { ids.iter().map(|i| text(i.0.clone())).collect() };
+
+        let sql = format!("SELECT task_id, status FROM c_status WHERE task_id IN ({holes})");
+        let mut rows = self.conn.query(&sql, params()).await.unwrap();
+        while let Some(r) = rows.next().await.unwrap() {
+            let tid = Id::new(as_text(r.get_value(0).unwrap()));
+            let status = as_text(r.get_value(1).unwrap());
+            if let Ok(v) = serde_json::from_value::<Status>(serde_json::Value::String(status)) {
+                reads.status.insert(tid, v);
+            }
+        }
+
+        let sql = format!("SELECT task_id, minutes FROM c_timespent WHERE task_id IN ({holes})");
+        let mut rows = self.conn.query(&sql, params()).await.unwrap();
+        while let Some(r) = rows.next().await.unwrap() {
+            let tid = Id::new(as_text(r.get_value(0).unwrap()));
+            let minutes = as_int(r.get_value(1).unwrap());
+            if let Ok(v) =
+                serde_json::from_value::<TimeSpent>(serde_json::Value::Number(minutes.into()))
+            {
+                reads.time_spent.insert(tid, v);
+            }
+        }
+
+        let sql = format!("SELECT task_id, eta_minutes FROM c_estimate WHERE task_id IN ({holes})");
+        let mut rows = self.conn.query(&sql, params()).await.unwrap();
+        while let Some(r) = rows.next().await.unwrap() {
+            let tid = Id::new(as_text(r.get_value(0).unwrap()));
+            let minutes = as_int(r.get_value(1).unwrap());
+            if let Ok(v) =
+                serde_json::from_value::<Estimate>(serde_json::Value::Number(minutes.into()))
+            {
+                reads.estimate.insert(tid, v);
+            }
+        }
+
+        let sql = format!("SELECT task_id, due_date FROM c_schedule WHERE task_id IN ({holes})");
+        let mut rows = self.conn.query(&sql, params()).await.unwrap();
+        while let Some(r) = rows.next().await.unwrap() {
+            let tid = Id::new(as_text(r.get_value(0).unwrap()));
+            let due_date = as_text(r.get_value(1).unwrap());
+            if let Ok(v) = serde_json::from_value::<Schedule>(serde_json::Value::String(due_date)) {
+                reads.schedule.insert(tid, v);
+            }
+        }
+
+        let sql = format!(
+            "SELECT task_id, actor_id, claimed FROM c_assignment WHERE task_id IN ({holes}) \
+             ORDER BY task_id, actor_id"
+        );
+        let mut rows = self.conn.query(&sql, params()).await.unwrap();
+        let mut assignments: std::collections::HashMap<Id, Vec<Assignment>> =
+            std::collections::HashMap::new();
+        while let Some(r) = rows.next().await.unwrap() {
+            let tid = Id::new(as_text(r.get_value(0).unwrap()));
+            let actor = Id::new(as_text(r.get_value(1).unwrap()));
+            let claimed = as_int(r.get_value(2).unwrap()) != 0;
+            assignments
+                .entry(tid)
+                .or_default()
+                .push(Assignment { actor, claimed });
+        }
+        for (tid, asg) in assignments {
+            reads.assignments.insert(tid, Assignments(asg));
+        }
+
+        reads
     }
 }
 

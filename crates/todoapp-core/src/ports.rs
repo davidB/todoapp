@@ -18,9 +18,14 @@
 //! [`crate::select_matching`] is the reference scan adapters reuse when they
 //! have no faster path (the in-memory store does).
 
+use std::collections::{HashMap, HashSet};
+
 use async_trait::async_trait;
 
-use crate::model::{Collection, Component, Filter, Id, Link, LinkKind};
+use crate::model::{
+    Assignments, Collection, Component, Estimate, Filter, Id, Link, LinkKind, Schedule, Status,
+    TimeSpent,
+};
 use crate::temporal::{Date, Timestamp};
 
 /// Injected time source — deterministic in tests.
@@ -54,6 +59,24 @@ pub trait ComponentStore {
     async fn remove<C: Component>(&self, id: &Id);
     /// All tasks carrying `C`, with the component. Presence is the capability.
     async fn list<C: Component>(&self) -> Vec<(Id, C)>;
+    /// Bulk read of the five capabilities `Services::aggregate` rolls up, for
+    /// a whole subtree's id set at once — the roll-up's hot path (called once
+    /// per *visible* tree row on every rebuild), which would otherwise be
+    /// `5 * ids.len()` single-id `get` calls. A durable adapter answers with a
+    /// handful of `WHERE id IN (...)` queries instead; the in-memory adapter
+    /// has no round trip to save and just loops `get`.
+    async fn aggregate_reads(&self, ids: &HashSet<Id>) -> AggregateReads;
+}
+
+/// See [`ComponentStore::aggregate_reads`]. Ids absent from a map simply don't
+/// carry that capability (same meaning as `get` returning `None`).
+#[derive(Debug, Default)]
+pub struct AggregateReads {
+    pub status: HashMap<Id, Status>,
+    pub time_spent: HashMap<Id, TimeSpent>,
+    pub estimate: HashMap<Id, Estimate>,
+    pub schedule: HashMap<Id, Schedule>,
+    pub assignments: HashMap<Id, Assignments>,
 }
 
 /// The minimal `task` entity (spec §7): identity + timestamps only. Everything
