@@ -432,6 +432,14 @@ fn text_edit_request(code: KeyCode, modifiers: KeyModifiers) -> Option<InputRequ
     }
 }
 
+/// Inserts a whole string (terminal bracketed-paste or clipboard paste) into
+/// a field verbatim, char by char, via `tui_input`.
+fn insert_text(input: &mut Input, text: &str) {
+    for c in text.chars() {
+        input.handle(InputRequest::InsertChar(c));
+    }
+}
+
 impl AppState {
     pub async fn new(
         store: TursoStore,
@@ -682,6 +690,26 @@ impl AppState {
         }
     }
 
+    /// Returns whichever text field currently has focus, if any — used to
+    /// route a terminal bracketed-paste (`Event::Paste`) to the right place.
+    fn active_input_mut(&mut self) -> Option<&mut Input> {
+        if let Some(editor) = &mut self.ws_editor
+            && editor.editing.is_some()
+        {
+            return editor.editing.as_mut();
+        }
+        if let Some(form) = &mut self.edit_form
+            && form.focus != ID_FIELD
+            && form.focus != WORKSPACE_FIELD
+        {
+            return Some(&mut form.fields[form.focus]);
+        }
+        if let Some((_, input)) = &mut self.input {
+            return Some(input);
+        }
+        None
+    }
+
     /// Returns `false` to signal quit.
     #[allow(clippy::too_many_lines)]
     pub async fn handle_event(
@@ -689,14 +717,20 @@ impl AppState {
         event: crossterm::event::Event,
         term_width: u16,
     ) -> anyhow::Result<bool> {
-        let crossterm::event::Event::Key(KeyEvent {
-            code,
-            modifiers,
-            kind,
-            ..
-        }) = event
-        else {
-            return Ok(true);
+        let (code, modifiers, kind) = match event {
+            crossterm::event::Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind,
+                ..
+            }) => (code, modifiers, kind),
+            crossterm::event::Event::Paste(text) => {
+                if let Some(input) = self.active_input_mut() {
+                    insert_text(input, &text);
+                }
+                return Ok(true);
+            }
+            _ => return Ok(true),
         };
         if kind != KeyEventKind::Press {
             return Ok(true);
@@ -1194,11 +1228,7 @@ impl AppState {
             }
             KeyCode::Char('v') if modifiers.contains(KeyModifiers::CONTROL) => {
                 match self.clipboard.get_text() {
-                    Ok(text) => {
-                        for c in text.chars() {
-                            input.handle(InputRequest::InsertChar(c));
-                        }
-                    }
+                    Ok(text) => insert_text(input, &text),
                     Err(e) => self.set_status(format!("paste: {e}")),
                 }
             }
@@ -1349,11 +1379,7 @@ impl AppState {
                     && form.focus != WORKSPACE_FIELD =>
             {
                 match self.clipboard.get_text() {
-                    Ok(text) => {
-                        for c in text.chars() {
-                            form.fields[form.focus].handle(InputRequest::InsertChar(c));
-                        }
-                    }
+                    Ok(text) => insert_text(&mut form.fields[form.focus], &text),
                     Err(e) => self.set_status(format!("paste: {e}")),
                 }
             }
@@ -2041,6 +2067,23 @@ pub(crate) mod tests {
             .unwrap();
         assert!(app.input.is_none());
         assert!(app.items.iter().any(|i| i.title == "Hello"));
+    }
+
+    /// A terminal bracketed paste arrives as one `Event::Paste`, not a
+    /// stream of key presses — so `\n`/`\t` inside it land verbatim instead
+    /// of submitting the dialog or shifting focus.
+    #[tokio::test]
+    async fn bracketed_paste_inserts_text_verbatim_without_submitting() {
+        let mut app = new_app().await;
+        app.handle_event(press_char('a'), TERM_WIDTH).await.unwrap(); // open AddRoot dialog
+        app.handle_event(
+            crossterm::event::Event::Paste("multi\nline\ttext".to_string()),
+            TERM_WIDTH,
+        )
+        .await
+        .unwrap();
+        let (_, input) = app.input.as_ref().unwrap();
+        assert_eq!(input.value(), "multi\nline\ttext");
     }
 
     /// Home/End jump within the current logical line; Enter inserts a

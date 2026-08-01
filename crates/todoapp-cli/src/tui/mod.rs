@@ -47,6 +47,11 @@ pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
         app.restore(state::load(&db_path)).await;
     }
     let mut terminal = ratatui::init();
+    // Without this, a terminal paste arrives as a stream of individual
+    // `Event::Key` presses indistinguishable from typing (so `\n`/`\t` in
+    // pasted text submit/tab-out instead of being inserted). With it, the
+    // whole paste arrives as one `Event::Paste(String)` (see `handle_event`).
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     // `submit_on_enter` needs Shift+Enter distinguishable from Enter, which
     // only the keyboard-enhancement protocol provides. Push the disambiguation
     // flag on terminals that support it; a no-op elsewhere (Shift+Enter then
@@ -62,6 +67,7 @@ pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
             crossterm::event::PopKeyboardEnhancementFlags
         );
     }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
     result
 }
