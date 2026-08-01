@@ -1558,34 +1558,62 @@ impl AppState {
         Ok(true)
     }
 
+    /// The index range `[idx, end)` covering `self.items[idx]` and its
+    /// visible descendants (contiguous in the flattened tree by construction
+    /// — see `build_visible_items`).
+    fn subtree_range(&self, idx: usize) -> std::ops::Range<usize> {
+        let depth = self.items[idx].depth;
+        let end = self.items[idx + 1..]
+            .iter()
+            .position(|i| i.depth <= depth)
+            .map_or(self.items.len(), |p| idx + 1 + p);
+        idx..end
+    }
+
+    /// Swap the cursor task with its next/previous sibling. Reorders in
+    /// `self.items` in place (a plain slice rotation) instead of a full
+    /// `rebuild()` DB round-trip, since alt+up/down is typically held down
+    /// for several repeats in a row and a per-keystroke rebuild (which walks
+    /// and re-aggregates every visible task) is the dominant cost there.
     async fn reorder_sibling(&mut self, down: bool) -> anyhow::Result<()> {
         let Some(item) = self.items.get(self.cursor).cloned() else {
             return Ok(());
         };
-        let anchor = if down {
-            let start = (self.cursor + 1).min(self.items.len());
-            self.items[start..]
+        let cur_range = self.subtree_range(self.cursor);
+        let neighbor_idx = if down {
+            self.items[cur_range.end..]
                 .iter()
-                .find(|i| i.depth == item.depth)
-                .map(|i| Anchor::After(i.id.clone()))
+                .position(|i| i.depth == item.depth)
+                .map(|p| cur_range.end + p)
         } else {
             self.items[..self.cursor]
                 .iter()
-                .rfind(|i| i.depth == item.depth)
-                .map(|i| Anchor::Before(i.id.clone()))
+                .rposition(|i| i.depth == item.depth)
         };
-        if let Some(anchor) = anchor {
-            let result = {
-                let svc = make_svc(&self.store, &self.clock, &self.ids);
-                svc.reorder(&item.id, anchor).await
-            };
-            if let Err(e) = result {
-                self.set_status(format!("reorder: {e}"));
-            }
-            self.rebuild().await;
-            if let Some(pos) = self.items.iter().position(|i| i.id == item.id) {
-                self.cursor = pos;
-            }
+        let Some(neighbor_idx) = neighbor_idx else {
+            return Ok(());
+        };
+        let neighbor_id = self.items[neighbor_idx].id.clone();
+        let anchor = if down {
+            Anchor::After(neighbor_id)
+        } else {
+            Anchor::Before(neighbor_id)
+        };
+        let result = {
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            svc.reorder(&item.id, anchor).await
+        };
+        if let Err(e) = result {
+            self.set_status(format!("reorder: {e}"));
+            return Ok(());
+        }
+        let neighbor_range = self.subtree_range(neighbor_idx);
+        if down {
+            self.items[cur_range.start..neighbor_range.end].rotate_left(cur_range.len());
+            self.cursor += neighbor_range.len();
+        } else {
+            self.items[neighbor_range.start..cur_range.end].rotate_right(cur_range.len());
+            self.cursor -= neighbor_range.len();
         }
         Ok(())
     }
@@ -3106,6 +3134,52 @@ pub(crate) mod tests {
             .unwrap();
         assert!(keep_running, "esc must not quit while marks are active");
         assert!(app.marked.is_empty());
+    }
+
+    /// Alt+Down/Up reorder siblings by rotating `self.items` in place (no
+    /// `rebuild()` round-trip) — must match what a full rebuild would show,
+    /// including when the moved item is an expanded subtree.
+    #[tokio::test]
+    async fn reorder_sibling_swaps_in_memory_and_persists() {
+        let mut app = new_app().await;
+        let (p, c1, c2, s) = tree_p_children_s(&mut app).await;
+        app.expanded.insert(p.clone());
+        app.rebuild().await;
+        assert_eq!(
+            app.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec![p.clone(), c1.clone(), c2.clone(), s.clone()]
+        );
+
+        // Move P (and its visible children) past S.
+        cursor_to(&mut app, &p);
+        app.handle_event(press(KeyCode::Down, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec![s.clone(), p.clone(), c1.clone(), c2.clone()],
+            "P's whole subtree moves together, tracking the cursor"
+        );
+        assert_eq!(app.cursor, 1, "cursor follows P to its new index");
+
+        // The in-memory swap must match what a DB round-trip would produce.
+        let via_memory = app.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        app.rebuild().await;
+        assert_eq!(
+            app.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            via_memory,
+            "reorder must be durably persisted, not just an in-memory swap"
+        );
+
+        // Alt+Up moves it back.
+        cursor_to(&mut app, &p);
+        app.handle_event(press(KeyCode::Up, KeyModifiers::ALT), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.items.iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec![p.clone(), c1.clone(), c2.clone(), s.clone()]
+        );
     }
 
     /// Batch assign applies the actor to every marked id — parent and children.
