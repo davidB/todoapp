@@ -6,8 +6,8 @@ use anyhow::Context as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use todoapp_app::{Anchor, QueryHit, TaskSnapshot};
 use todoapp_core::{
-    Assignment, Clock, Date, Due, DueSpec, Duration, Filter, Id, LinkKind, Query, Status,
-    TaskEntityStore, Workspace, shortest_unique_prefixes,
+    Assignment, Clock, ComponentStore, Date, Due, DueSpec, Duration, Estimate, Filter, Id,
+    LinkKind, Query, Status, TaskEntityStore, Workspace, shortest_unique_prefixes,
 };
 use todoapp_store_turso::TursoStore;
 use tui_input::{Input, InputRequest};
@@ -56,6 +56,10 @@ pub struct VisibleItem {
     pub eta: Option<(Date, bool)>,
     pub assignees: String,
     pub estimate: Duration,
+    /// `Estimate` summed over non-`Done` descendants — the `eta` projection
+    /// input (`Aggregate::remaining`). Cached so a status-change fast path
+    /// (`patch_status_locally`) can recompute `eta` without a DB round trip.
+    pub remaining: Duration,
     pub elapsed: Duration,
     pub tags: String,
 }
@@ -302,22 +306,14 @@ async fn build_visible_items(
         let is_expanded = expanded.contains(&id);
         let is_blocked = svc.is_blocked(&id).await;
         let agg = svc.aggregate(&id).await.unwrap_or_default();
-
-        // No projection when there's nothing to project from (no due date and
-        // no open estimate anywhere in the subtree).
-        let eta = if agg.earliest_due.is_none() && agg.remaining == Duration::ZERO {
-            None
-        } else {
-            let remaining = remaining_effort(agg.remaining, agg.time_spent);
-            let projected =
-                project_finish_date(today, remaining, config.hours_per_day, config.days_per_week);
-            // Overdue/eta stay day-granularity: a rendez-vous time-of-day is
-            // display-only (`VisibleItem.due`, below), never compared here.
-            Some(match agg.earliest_due {
-                Some(due) => (due.date.max(projected), projected > due.date),
-                None => (projected, false),
-            })
-        };
+        let eta = compute_eta(
+            agg.earliest_due,
+            agg.remaining,
+            agg.time_spent,
+            today,
+            config.hours_per_day,
+            config.days_per_week,
+        );
         // jscpd:ignore-start
         // ponytail: `tags.iter().cloned().collect::<Vec<_>>().join(", ")` also
         // appears in `handle_event`'s edit-form setup below; only 2 occurrences
@@ -347,6 +343,7 @@ async fn build_visible_items(
             eta,
             assignees,
             estimate: agg.estimate,
+            remaining: agg.remaining,
             elapsed: agg.time_spent,
             tags,
         });
@@ -358,6 +355,32 @@ async fn build_visible_items(
         }
     }
     items
+}
+
+/// `eta` projection (spec: `max(due, projected finish)`, red when the
+/// projection overruns `due`) — `None` when there's no due date and no open
+/// estimate to project from. Shared by `build_visible_items` and the
+/// status-change fast path (`AppState::patch_status_locally`) so both stay
+/// exactly in sync with `Services::aggregate`'s roll-up math.
+fn compute_eta(
+    due: Option<Due>,
+    remaining: Duration,
+    elapsed: Duration,
+    today: Date,
+    hours_per_day: Duration,
+    days_per_week: u8,
+) -> Option<(Date, bool)> {
+    if due.is_none() && remaining == Duration::ZERO {
+        return None;
+    }
+    let remaining = remaining_effort(remaining, elapsed);
+    let projected = project_finish_date(today, remaining, hours_per_day, days_per_week);
+    // Overdue/eta stay day-granularity: a rendez-vous time-of-day is
+    // display-only (`VisibleItem.due`), never compared here.
+    Some(match due {
+        Some(due) => (due.date.max(projected), projected > due.date),
+        None => (projected, false),
+    })
 }
 
 /// Parse a comma-separated actor-id field (e.g. typed into the quick-assign
@@ -1479,12 +1502,35 @@ impl AppState {
         Ok(())
     }
 
+    /// Cycles the cursor task's status (no active batch selection) via
+    /// `patch_status_locally` instead of a full `rebuild()` — space is
+    /// typically held/repeated rapidly walking down a list, so a rebuild's
+    /// per-visible-row DB reads are the dominant cost there, same as
+    /// `reorder_sibling`. A batch selection (`self.marked` non-empty) can
+    /// touch marked-but-collapsed ids that aren't in `self.items` at all, so
+    /// it keeps the DB round trip + full rebuild.
     async fn cycle_status(&mut self) -> anyhow::Result<()> {
+        let order = self.config.status_order.clone();
+        if self.marked.is_empty()
+            && let Some(id) = self.cursor_id()
+            && let Some(idx) = self.items.iter().position(|i| i.id == id)
+        {
+            let old = self.items[idx].status;
+            let new_status = match order.iter().position(|s| *s == old) {
+                Some(i) => order[(i + 1) % order.len()],
+                None => order[0],
+            };
+            let svc = make_svc(&self.store, &self.clock, &self.ids);
+            match svc.set_status(&id, new_status).await {
+                Ok(_) => self.patch_status_locally(idx, old, new_status).await,
+                Err(e) => self.set_status(format!("status: {e}")),
+            }
+            return Ok(());
+        }
         let targets = self.marked_ids();
         if targets.is_empty() {
             return Ok(());
         }
-        let order = self.config.status_order.clone();
         let mut error = None;
         {
             let svc = make_svc(&self.store, &self.clock, &self.ids);
@@ -1568,6 +1614,87 @@ impl AppState {
             .position(|i| i.depth <= depth)
             .map_or(self.items.len(), |p| idx + 1 + p);
         idx..end
+    }
+
+    /// `idx` plus every visible ancestor's index, root-most last — the rows
+    /// whose subtree-rollup fields (`by_status`/`done`/`agg_status`/...)
+    /// include `self.items[idx]` and so need patching alongside it.
+    fn ancestor_chain(&self, idx: usize) -> Vec<usize> {
+        let mut out = vec![idx];
+        let mut want_depth = self.items[idx].depth;
+        let mut i = idx;
+        while want_depth > 0 {
+            want_depth -= 1;
+            let Some(p) = self.items[..i]
+                .iter()
+                .rposition(|it| it.depth == want_depth)
+            else {
+                break;
+            };
+            out.push(p);
+            i = p;
+        }
+        out
+    }
+
+    /// Applies a status change to `self.items[idx]` and rolls the delta up
+    /// through its visible ancestors, mirroring `Services::aggregate`'s
+    /// per-status math exactly — a status change never touches child counts,
+    /// estimates, or due dates, so the delta is exact, not an approximation.
+    /// Used by `cycle_status`'s cursor-only fast path in place of `rebuild()`.
+    async fn patch_status_locally(&mut self, idx: usize, old: Status, new: Status) {
+        if old == new {
+            return;
+        }
+        let crosses_done = (old == Status::Done) != (new == Status::Done);
+        let own_estimate = if crosses_done {
+            self.store
+                .get::<Estimate>(&self.items[idx].id)
+                .await
+                .map_or(Duration::ZERO, |e| e.0)
+        } else {
+            Duration::ZERO
+        };
+        self.items[idx].status = new;
+        let today = self.clock.today();
+        let (hours_per_day, days_per_week) = (self.config.hours_per_day, self.config.days_per_week);
+        for i in self.ancestor_chain(idx) {
+            let it = &mut self.items[i];
+            if let Some(c) = it.by_status.get_mut(&old) {
+                *c -= 1;
+                if *c == 0 {
+                    it.by_status.remove(&old);
+                }
+            }
+            *it.by_status.entry(new).or_insert(0) += 1;
+            if old == Status::Done {
+                it.done -= 1;
+            }
+            if new == Status::Done {
+                it.done += 1;
+            }
+            it.agg_status = it
+                .by_status
+                .keys()
+                .copied()
+                .min_by_key(|s| s.rank())
+                .unwrap_or(Status::Draft);
+            if crosses_done {
+                it.remaining = if new == Status::Done {
+                    it.remaining - own_estimate
+                } else {
+                    it.remaining + own_estimate
+                };
+                it.eta = compute_eta(
+                    it.due,
+                    it.remaining,
+                    it.elapsed,
+                    today,
+                    hours_per_day,
+                    days_per_week,
+                );
+            }
+        }
     }
 
     /// Swap the cursor task with its next/previous sibling. Reorders in
@@ -3207,6 +3334,66 @@ pub(crate) mod tests {
                 "every task in the marked branch should carry the actor"
             );
         }
+    }
+
+    /// Cursor-only space (no batch selection) patches `self.items` in place
+    /// instead of a full `rebuild()` — must match what a rebuild would show,
+    /// including the roll-up onto the visible parent, and `remaining`/`eta`
+    /// when the change crosses into/out of `Done`.
+    #[tokio::test]
+    async fn cycle_status_patches_locally_and_matches_rebuild() {
+        let mut app = new_app().await;
+        let (p, c1, c2, _s) = tree_p_children_s(&mut app).await;
+        app.expanded.insert(p.clone());
+        app.rebuild().await;
+
+        {
+            let svc = make_svc(&app.store, &app.clock, &app.ids);
+            svc.set_estimate(&c1, Some(Duration::from_minutes(60)))
+                .await
+                .unwrap();
+        }
+        app.rebuild().await;
+
+        let snapshot = |app: &AppState| -> Vec<_> {
+            app.items
+                .iter()
+                .map(|i| {
+                    (
+                        i.id.clone(),
+                        i.status,
+                        i.agg_status,
+                        i.done,
+                        i.total,
+                        i.by_status.clone(),
+                        i.remaining,
+                        i.eta,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Cycle C1 through every status (todo -> wip -> paused -> done),
+        // crossing into `Done` on the last step — after each step, the
+        // locally patched state must equal a full rebuild's.
+        for _ in 0..3 {
+            cursor_to(&mut app, &c1);
+            assert!(app.marked.is_empty());
+            app.handle_event(press_char(' '), TERM_WIDTH).await.unwrap();
+
+            let via_local = snapshot(&app);
+            app.rebuild().await;
+            let via_rebuild = snapshot(&app);
+            assert_eq!(via_local, via_rebuild);
+        }
+
+        let svc = make_svc(&app.store, &app.clock, &app.ids);
+        assert_eq!(svc.snapshot(&c1).await.unwrap().status, Status::Done);
+        assert_eq!(svc.snapshot(&c2).await.unwrap().status, Status::Todo);
+        // Done and the only estimate in the subtree ⇒ nothing left to project.
+        let p_row = app.items.iter().find(|i| i.id == p).unwrap();
+        assert_eq!(p_row.remaining, Duration::ZERO);
+        assert_eq!(p_row.eta, None);
     }
 
     /// Batch status-cycle advances each marked task from its *own* status.
