@@ -27,7 +27,7 @@ pub struct UlidGen;
 
 impl IdGenerator for UlidGen {
     fn next_id(&self) -> Id {
-        Id::new(Ulid::new().to_string().to_lowercase())
+        Id::new(Ulid::generate().to_string().to_lowercase())
     }
 }
 
