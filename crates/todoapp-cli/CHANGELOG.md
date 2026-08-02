@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2] - 2026-08-02
+
+### Bug Fixes
+
+- Update ulid, base64, toml_edit,... ([ccb1e85](https://github.com/davidB/todoapp/commit/ccb1e85ea08bd25c64989464bbed21204a76d10d))
+
+
 ## [0.7.1] - 2026-08-01
 
 ### Bug Fixes
