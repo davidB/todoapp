@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.2] - 2026-08-09
+
+### Bug Fixes
+
+- Resolve short id prefixes for all task-id CLI arguments ([2bbcaad](https://github.com/davidB/todoapp/commit/2bbcaad53a6607f3eee60f43babb725a1939f285))
+- Route mouse-wheel scroll to the details pane ([53822e3](https://github.com/davidB/todoapp/commit/53822e30318641627f455eb2ee7a97c56750f44f))
+- Constrain edit-form mouse selection to the field it started in ([b4790de](https://github.com/davidB/todoapp/commit/b4790dec12616290840cdfdac59116b2d9e49947))
+- Update ulid, base64, toml_edit,... ([ccb1e85](https://github.com/davidB/todoapp/commit/ccb1e85ea08bd25c64989464bbed21204a76d10d))
+
+
 ## [0.7.1] - 2026-08-01
 
 ### Bug Fixes
