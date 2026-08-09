@@ -164,11 +164,15 @@ pub fn current_line_bounds(input: &Input) -> (usize, usize) {
     (len, len)
 }
 
-fn set_visual_pos(input: &mut Input, width: usize, row: usize, col: usize) {
-    let value = input.value().to_string();
-    let rows = visual_row_ranges(&value, width);
+/// Codepoint offset of visual `(row, col)` in `value` (wrapped at `width`).
+/// Out-of-range `row`/`col` clamp to the nearest valid position (last row,
+/// end of row) rather than failing — mouse hit-testing always wants a
+/// position, even when the pointer lands past the last line or a short row.
+pub fn visual_pos_to_codepoint(value: &str, width: usize, row: usize, col: usize) -> usize {
+    let rows = visual_row_ranges(value, width);
+    let row = row.min(rows.len().saturating_sub(1));
     let Some((line_idx, range)) = rows.get(row).cloned() else {
-        return;
+        return 0;
     };
     let lines: Vec<&str> = value.split('\n').collect();
     let line = lines[line_idx];
@@ -179,7 +183,11 @@ fn set_visual_pos(input: &mut Input, width: usize, row: usize, col: usize) {
         .nth(clamped_col)
         .map_or(range.end, |(b, _)| range.start + b);
     let line_start: usize = lines[..line_idx].iter().map(|l| l.len() + 1).sum();
-    let codepoint = byte_to_codepoint(&value, line_start + byte_in_line);
+    byte_to_codepoint(value, line_start + byte_in_line)
+}
+
+fn set_visual_pos(input: &mut Input, width: usize, row: usize, col: usize) {
+    let codepoint = visual_pos_to_codepoint(input.value(), width, row, col);
     input.handle(InputRequest::SetCursor(codepoint));
 }
 

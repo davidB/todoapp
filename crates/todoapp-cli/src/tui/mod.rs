@@ -52,6 +52,11 @@ pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
     // pasted text submit/tab-out instead of being inserted). With it, the
     // whole paste arrives as one `Event::Paste(String)` (see `handle_event`).
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+    // Mouse capture lets the app own drag-selection (clamped to the edit
+    // form's Title/Notes fields, see `AppState::handle_mouse_event`) instead
+    // of the terminal's own native selection, which has no notion of the
+    // popup's bounds and leaks into whatever else shares those screen rows.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     // `submit_on_enter` needs Shift+Enter distinguishable from Enter, which
     // only the keyboard-enhancement protocol provides. Push the disambiguation
     // flag on terminals that support it; a no-op elsewhere (Shift+Enter then
@@ -67,6 +72,7 @@ pub async fn run(db: Option<PathBuf>) -> anyhow::Result<()> {
             crossterm::event::PopKeyboardEnhancementFlags
         );
     }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
     result
@@ -109,7 +115,9 @@ async fn run_loop(
 
     let result = async {
         loop {
-            terminal.draw(|f| ui::render(f, app))?;
+            let mut edit_field_geom = None;
+            terminal.draw(|f| edit_field_geom = ui::render(f, app))?;
+            app.edit_field_geom = edit_field_geom;
             // spawn_blocking keeps the current_thread runtime unblocked while waiting
             // for input; poll-with-timeout (rather than a blocking read) lets the
             // loop redraw periodically even without a keypress, animating the `wip`

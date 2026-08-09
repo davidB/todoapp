@@ -15,14 +15,14 @@ use ratatui::{
 use todoapp_core::Status;
 
 use crate::tui::app::{
-    AppState, ColumnsEditor, DetailPane, ID_FIELD, InputMode, NOTES_FIELD, Selection, TITLE_FIELD,
-    View, VisibleItem, WsEditor, WsPicker,
+    AppState, ColumnsEditor, DetailPane, FieldGeom, ID_FIELD, InputMode, MouseSelect, NOTES_FIELD,
+    Selection, TITLE_FIELD, View, VisibleItem, WsEditor, WsPicker,
 };
 use crate::tui::config::{ColumnKind, Config, Semantic};
 use crate::tui::keymap::{Action, Keymap};
 use crate::tui::text_edit;
 
-pub fn render(f: &mut Frame, app: &AppState) {
+pub fn render(f: &mut Frame, app: &AppState) -> Option<[FieldGeom; 2]> {
     let area = f.area();
     let [main, status_bar] = Layout::default()
         .direction(Direction::Vertical)
@@ -54,9 +54,10 @@ pub fn render(f: &mut Frame, app: &AppState) {
     if let Some(ids) = &app.confirm_delete {
         render_confirm_delete_modal(f, area, app, ids);
     }
-    if let Some(form) = &app.edit_form {
-        render_edit_form(f, area, form);
-    }
+    let edit_field_geom = app
+        .edit_form
+        .as_ref()
+        .map(|form| render_edit_form(f, area, form, app.mouse_select));
     if let Some(picker) = &app.ws_picker {
         render_ws_picker(f, area, picker);
     }
@@ -69,6 +70,7 @@ pub fn render(f: &mut Frame, app: &AppState) {
     if matches!(app.view, View::Help) {
         render_help(f, area, &app.keymap);
     }
+    edit_field_geom
 }
 
 /// The tree column (indent + expand arrow + status icon + title + blocked
@@ -789,12 +791,97 @@ fn multiline_layout(
     (rows, visible, top, cursor_row, cursor_col)
 }
 
+/// Renders one multi-line field's label + visible wrapped rows into `lines`,
+/// returning the focused cursor's on-screen `(col, line)` offset (if this is
+/// the focused field) and the field's viewport geometry (for mouse
+/// hit-testing — see `FieldGeom`). Split out of `render_edit_form` to keep it
+/// under the line-count lint; also the natural seam since it's the one part
+/// that needs `mouse_select`.
+#[allow(clippy::too_many_arguments)]
+fn render_multiline_field(
+    lines: &mut Vec<Line<'static>>,
+    field: &tui_input::Input,
+    label: &str,
+    focused: bool,
+    inner_width: usize,
+    popup: Rect,
+    field_index: usize,
+    mouse_select: Option<MouseSelect>,
+) -> (Option<(u16, u16)>, FieldGeom) {
+    let value = field.value();
+    let (rows, visible, top, cursor_row, cursor_col) = multiline_layout(field, inner_width);
+    lines.push(if focused {
+        Line::styled(
+            format!("{label}:"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Line::raw(format!("{label}:"))
+    });
+    let content_top_line = lines.len();
+    let base_style = if focused {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let mut cursor_pos = None;
+    let visible_rows = &rows[top..(top + visible).min(rows.len())];
+    for (row_idx, row) in visible_rows.iter().enumerate() {
+        let line_idx = lines.len();
+        // Only the field the in-progress mouse drag targets gets a per-row
+        // highlighted range; everything else renders as before.
+        let row_sel = mouse_select
+            .filter(|sel| sel.field == field_index)
+            .and_then(|sel| {
+                let row_start =
+                    text_edit::visual_pos_to_codepoint(value, inner_width, top + row_idx, 0);
+                let row_len = row.chars().count();
+                let start = sel
+                    .anchor
+                    .min(sel.cursor)
+                    .saturating_sub(row_start)
+                    .min(row_len);
+                let end = sel
+                    .anchor
+                    .max(sel.cursor)
+                    .saturating_sub(row_start)
+                    .min(row_len);
+                (end > start).then_some((start, end))
+            });
+        lines.push(match row_sel {
+            Some((start, end)) => Line::from(mouse_selection_spans(row, start, end, base_style)),
+            None => Line::styled((*row).to_string(), base_style),
+        });
+        if focused && top + row_idx == cursor_row {
+            cursor_pos = Some((
+                u16::try_from(cursor_col).unwrap_or(0),
+                u16::try_from(line_idx).unwrap_or(0),
+            ));
+        }
+    }
+    let geom = FieldGeom {
+        rect: Rect::new(
+            popup.x + 1,
+            popup.y + 1 + u16::try_from(content_top_line).unwrap_or(0),
+            popup.width.saturating_sub(2),
+            u16::try_from(visible).unwrap_or(0),
+        ),
+        top,
+    };
+    (cursor_pos, geom)
+}
+
 /// The multi-field task edit dialog. Title and notes are multi-line/
 /// soft-wrapped like the add dialog, each with its own vertical scroll; the
 /// other fields are one line each with their own horizontal scroll.
 /// Tab/Shift+Tab cycles focus; the id field is read-only (never gets a
 /// cursor).
-fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::tui::app::TaskEditForm) {
+fn render_edit_form(
+    f: &mut Frame,
+    area: Rect,
+    form: &crate::tui::app::TaskEditForm,
+    mouse_select: Option<MouseSelect>,
+) -> [FieldGeom; 2] {
     let inner_width = text_edit::dialog_wrap_width(area.width);
 
     let single_line_count = crate::tui::app::EDIT_FORM_LABELS.len() - 2; // all but title/notes
@@ -808,38 +895,34 @@ fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::tui::app::TaskEditF
 
     let mut lines: Vec<Line> = Vec::new();
     let mut cursor_pos: Option<(u16, u16)> = None;
+    let mut field_geoms = [
+        FieldGeom {
+            rect: Rect::default(),
+            top: 0,
+        },
+        FieldGeom {
+            rect: Rect::default(),
+            top: 0,
+        },
+    ];
 
     for (i, label) in crate::tui::app::EDIT_FORM_LABELS.iter().enumerate() {
         let focused = i == form.focus;
         if i == TITLE_FIELD || i == NOTES_FIELD {
-            let (rows, visible, top, cursor_row, cursor_col) =
-                multiline_layout(&form.fields[i], inner_width);
-            lines.push(if focused {
-                Line::styled(
-                    format!("{label}:"),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Line::raw(format!("{label}:"))
-            });
-            let visible_rows = &rows[top..(top + visible).min(rows.len())];
-            for (row_idx, row) in visible_rows.iter().enumerate() {
-                let line_idx = lines.len();
-                lines.push(if focused {
-                    Line::styled(
-                        (*row).to_string(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )
-                } else {
-                    Line::raw((*row).to_string())
-                });
-                if focused && top + row_idx == cursor_row {
-                    cursor_pos = Some((
-                        u16::try_from(cursor_col).unwrap_or(0),
-                        u16::try_from(line_idx).unwrap_or(0),
-                    ));
-                }
+            let (cp, geom) = render_multiline_field(
+                &mut lines,
+                &form.fields[i],
+                label,
+                focused,
+                inner_width,
+                popup,
+                i,
+                mouse_select,
+            );
+            if cp.is_some() {
+                cursor_pos = cp;
             }
+            field_geoms[usize::from(i != TITLE_FIELD)] = geom;
             continue;
         }
 
@@ -873,6 +956,34 @@ fn render_edit_form(f: &mut Frame, area: Rect, form: &crate::tui::app::TaskEditF
     if let Some((x, y)) = cursor_pos {
         f.set_cursor_position(Position::new(popup.x + 1 + x, popup.y + 1 + y));
     }
+    field_geoms
+}
+
+/// Reversed-video render of a mouse drag-selection's `[start, end)` codepoint
+/// range within one already-wrapped visual row (see `MouseSelect`'s
+/// half-open, cursor-position convention — unlike `selection_spans`, which is
+/// inclusive char-index-based for the unrelated keyboard select mode).
+fn mouse_selection_spans(row: &str, start: usize, end: usize, base: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = row.chars().collect();
+    let start = start.min(chars.len());
+    let end = end.min(chars.len());
+    let mut spans = Vec::new();
+    if start > 0 {
+        spans.push(Span::styled(
+            chars[..start].iter().collect::<String>(),
+            base,
+        ));
+    }
+    if end > start {
+        spans.push(Span::styled(
+            chars[start..end].iter().collect::<String>(),
+            base.add_modifier(Modifier::REVERSED),
+        ));
+    }
+    if end < chars.len() {
+        spans.push(Span::styled(chars[end..].iter().collect::<String>(), base));
+    }
+    spans
 }
 
 /// The workspace-assignment popup opened from the edit form's workspace
@@ -1061,7 +1172,11 @@ mod tests {
     fn render_to_buffer(app: &AppState) -> ratatui::buffer::Buffer {
         let backend = TestBackend::new(130, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(f, app)).unwrap();
+        terminal
+            .draw(|f| {
+                render(f, app);
+            })
+            .unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -1117,7 +1232,11 @@ mod tests {
         // appended after them (the popup's height is capped to the terminal's).
         let backend = TestBackend::new(130, 60);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(f, &app)).unwrap();
+        terminal
+            .draw(|f| {
+                render(f, &app);
+            })
+            .unwrap();
         let buf = terminal.backend().buffer().clone();
         let rendered = buf
             .content

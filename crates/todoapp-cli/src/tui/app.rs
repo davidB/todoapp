@@ -3,7 +3,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::Context as _;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
 use todoapp_app::{Anchor, QueryHit, TaskSnapshot};
 use todoapp_core::{
     Assignment, Clock, ComponentStore, Date, Due, DueSpec, Duration, Estimate, Filter, Id,
@@ -144,6 +147,28 @@ pub struct Selection {
     pub cursor: usize,
 }
 
+/// On-screen viewport of one edit-form multi-line field's *visible* wrapped
+/// rows (i.e. after `top`-scrolling), as computed by `ui::render_edit_form`
+/// each frame. Lets mouse hit-testing map a screen `(column, row)` back to a
+/// position in the field without redoing the popup/wrap layout math.
+#[derive(Clone, Copy)]
+pub struct FieldGeom {
+    pub rect: Rect,
+    pub top: usize,
+}
+
+/// An in-progress mouse drag-selection inside one edit-form field (`TITLE_FIELD`
+/// or `NOTES_FIELD`). `anchor`/`cursor` are codepoint *cursor positions*
+/// (boundaries, like `tui_input::Input::cursor()`) into that field's value —
+/// deliberately not `Selection` (char-index, inclusive range): different
+/// source (mouse vs. keyboard) with a different natural addressing scheme.
+#[derive(Clone, Copy)]
+pub struct MouseSelect {
+    pub field: usize,
+    pub anchor: usize,
+    pub cursor: usize,
+}
+
 /// Fields that get multi-line editing (Enter inserts a newline, Up/Down move
 /// the caret across wrapped rows) instead of single-line behavior.
 fn is_multiline_field(i: usize) -> bool {
@@ -262,6 +287,14 @@ pub struct AppState {
     /// Active char-range selection on the current row's title (Tree/List),
     /// while in select mode (entered via `Action::Select`).
     pub selection: Option<Selection>,
+    /// In-progress mouse drag-selection inside the edit form's Title/Notes
+    /// field, if any (see [`MouseSelect`]).
+    pub mouse_select: Option<MouseSelect>,
+    /// Screen geometry of the edit form's Title (`[0]`)/Notes (`[1]`) visible
+    /// rows, refreshed by `mod.rs`'s event loop after each `ui::render` call —
+    /// mouse hit-testing needs this since `handle_event` runs *between*
+    /// frames, without its own access to the layout `ui.rs` just computed.
+    pub edit_field_geom: Option<[FieldGeom; 2]>,
     /// Whether the (non-modal) details pane is toggled on (`Action::ViewDetail`).
     pub detail_shown: bool,
     /// Cached details for the current selection; `None` when the pane is shown
@@ -488,6 +521,8 @@ impl AppState {
             ws_editor: None,
             columns_editor: None,
             selection: None,
+            mouse_select: None,
+            edit_field_geom: None,
             detail_shown: false,
             detail: None,
             status_msg: None,
@@ -752,6 +787,9 @@ impl AppState {
                     insert_text(input, &text);
                 }
                 return Ok(true);
+            }
+            crossterm::event::Event::Mouse(m) => {
+                return Ok(self.handle_mouse_event(m, text_edit::dialog_wrap_width(term_width)));
             }
             _ => return Ok(true),
         };
@@ -1140,6 +1178,83 @@ impl AppState {
         true
     }
 
+    /// Mouse handling, scoped to the edit form's Title/Notes fields — the
+    /// only place the app has a precise, pre-computed viewport
+    /// (`edit_field_geom`, refreshed each frame by the event loop) to
+    /// hit-test against. A drag/release position is *clamped* into the
+    /// active field's rect before being mapped to a buffer position, so a
+    /// selection can never extend past that field's own visible text — that
+    /// clamping is the actual fix for selection leaking into surrounding UI
+    /// (previously mouse capture wasn't enabled at all, so selection was the
+    /// terminal's own unconstrained native one; see `mod.rs`).
+    fn handle_mouse_event(&mut self, m: MouseEvent, width: usize) -> bool {
+        let (Some(form), Some(geoms)) = (&mut self.edit_form, self.edit_field_geom) else {
+            return true;
+        };
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(field) = geoms
+                    .iter()
+                    .position(|g| g.rect.contains(Position::new(m.column, m.row)))
+                else {
+                    return true;
+                };
+                let geom = geoms[field];
+                let cp = text_edit::visual_pos_to_codepoint(
+                    form.fields[field].value(),
+                    width,
+                    usize::from(m.row - geom.rect.y) + geom.top,
+                    usize::from(m.column - geom.rect.x),
+                );
+                form.focus = field;
+                form.fields[field].handle(InputRequest::SetCursor(cp));
+                self.mouse_select = Some(MouseSelect {
+                    field,
+                    anchor: cp,
+                    cursor: cp,
+                });
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(sel) = self.mouse_select else {
+                    return true;
+                };
+                let geom = geoms[sel.field];
+                let col = m
+                    .column
+                    .clamp(geom.rect.x, geom.rect.x + geom.rect.width.saturating_sub(1));
+                let row = m.row.clamp(
+                    geom.rect.y,
+                    geom.rect.y + geom.rect.height.saturating_sub(1),
+                );
+                let cp = text_edit::visual_pos_to_codepoint(
+                    form.fields[sel.field].value(),
+                    width,
+                    usize::from(row - geom.rect.y) + geom.top,
+                    usize::from(col - geom.rect.x),
+                );
+                self.mouse_select = Some(MouseSelect { cursor: cp, ..sel });
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let Some(sel) = self.mouse_select.take() else {
+                    return true;
+                };
+                let start = sel.anchor.min(sel.cursor);
+                let end = sel.anchor.max(sel.cursor);
+                if end > start {
+                    let text: String = form.fields[sel.field]
+                        .value()
+                        .chars()
+                        .skip(start)
+                        .take(end - start)
+                        .collect();
+                    self.yank(&text);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
     async fn handle_input_key(
         &mut self,
         code: KeyCode,
@@ -1355,7 +1470,10 @@ impl AppState {
             KeyCode::BackTab => {
                 form.focus = (form.focus + form.fields.len() - 1) % form.fields.len();
             }
-            KeyCode::Esc => self.edit_form = None,
+            KeyCode::Esc => {
+                self.edit_form = None;
+                self.mouse_select = None;
+            }
             // Notes: Enter inserts a newline; Alt+Enter (or Enter elsewhere) saves.
             KeyCode::Enter
                 if is_multiline_field(form.focus) && !modifiers.contains(KeyModifiers::ALT) =>
@@ -1369,6 +1487,7 @@ impl AppState {
             }
             KeyCode::Enter => {
                 if let Some(form) = self.edit_form.take() {
+                    self.mouse_select = None;
                     self.submit_edit_form(form).await?;
                 }
             }
@@ -2621,6 +2740,81 @@ pub(crate) mod tests {
 
         let snap = save_edit_form(&mut app, &task_id).await;
         assert_eq!(snap.notes.as_deref(), Some("line one\nline two"));
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> crossterm::event::Event {
+        crossterm::event::Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// A click-drag across the notes field's wrapped rows copies exactly the
+    /// dragged text — the fix for selection leaking into surrounding UI
+    /// (previously the terminal's own native, unconstrained selection; see
+    /// `mod.rs`'s `EnableMouseCapture`). Also checks that a drag coordinate
+    /// past the field's own edge clamps instead of reading garbage.
+    #[tokio::test]
+    async fn mouse_drag_selects_and_copies_within_notes_field_only() {
+        let (mut app, _task_id) = new_app_with_task().await;
+        app.handle_event(press_char('e'), TERM_WIDTH).await.unwrap();
+        app.handle_event(press(KeyCode::Tab, KeyModifiers::NONE), TERM_WIDTH)
+            .await
+            .unwrap(); // focus -> notes
+        type_str(&mut app, "hello world\nsecond line").await;
+
+        // Render once (TestBackend), exactly like `mod.rs`'s event loop does
+        // between polls, to get real field geometry for hit-testing.
+        let backend = ratatui::backend::TestBackend::new(TERM_WIDTH, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut geom = None;
+        terminal
+            .draw(|f| geom = crate::tui::ui::render(f, &app))
+            .unwrap();
+        app.edit_field_geom = geom;
+        let notes_rect = app.edit_field_geom.unwrap()[NOTES_FIELD].rect;
+
+        // Drag from the start of "hello world" (row 0) down past the field's
+        // last row and off to the right — both should clamp into the field
+        // rather than reading whatever is on screen there.
+        let start = (notes_rect.x, notes_rect.y);
+        let past_bottom_right = (notes_rect.x + notes_rect.width + 5, notes_rect.y + 50);
+
+        app.handle_event(
+            mouse_event(MouseEventKind::Down(MouseButton::Left), start.0, start.1),
+            TERM_WIDTH,
+        )
+        .await
+        .unwrap();
+        app.handle_event(
+            mouse_event(
+                MouseEventKind::Drag(MouseButton::Left),
+                past_bottom_right.0,
+                past_bottom_right.1,
+            ),
+            TERM_WIDTH,
+        )
+        .await
+        .unwrap();
+        app.handle_event(
+            mouse_event(
+                MouseEventKind::Up(MouseButton::Left),
+                past_bottom_right.0,
+                past_bottom_right.1,
+            ),
+            TERM_WIDTH,
+        )
+        .await
+        .unwrap();
+
+        assert!(app.mouse_select.is_none(), "selection ends on mouse-up");
+        let copied = app.clipboard.get_text().unwrap();
+        assert_eq!(
+            copied, "hello world\nsecond line",
+            "drag clamped to the field's own text, not whatever's past its edge"
+        );
     }
 
     /// The title field is multi-line too (mirrors notes): a title created
