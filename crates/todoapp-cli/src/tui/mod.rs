@@ -115,9 +115,9 @@ async fn run_loop(
 
     let result = async {
         loop {
-            let mut edit_field_geom = None;
-            terminal.draw(|f| edit_field_geom = ui::render(f, app))?;
-            app.edit_field_geom = edit_field_geom;
+            let mut geoms = (None, None);
+            terminal.draw(|f| geoms = ui::render(f, app))?;
+            (app.edit_field_geom, app.detail_area) = geoms;
             // spawn_blocking keeps the current_thread runtime unblocked while waiting
             // for input; poll-with-timeout (rather than a blocking read) lets the
             // loop redraw periodically even without a keypress, animating the `wip`

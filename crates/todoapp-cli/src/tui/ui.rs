@@ -22,7 +22,7 @@ use crate::tui::config::{ColumnKind, Config, Semantic};
 use crate::tui::keymap::{Action, Keymap};
 use crate::tui::text_edit;
 
-pub fn render(f: &mut Frame, app: &AppState) -> Option<[FieldGeom; 2]> {
+pub fn render(f: &mut Frame, app: &AppState) -> (Option<[FieldGeom; 2]>, Option<Rect>) {
     let area = f.area();
     let [main, status_bar] = Layout::default()
         .direction(Direction::Vertical)
@@ -31,12 +31,14 @@ pub fn render(f: &mut Frame, app: &AppState) -> Option<[FieldGeom; 2]> {
 
     // The details pane (when toggled on) is a non-modal, full-width strip below
     // the main view — the tree/list keeps focus and the top of the screen.
+    let mut detail_area = None;
     let content = if app.detail_shown {
         let [top, bottom] = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .areas(main);
         render_detail(f, bottom, app);
+        detail_area = Some(bottom);
         top
     } else {
         main
@@ -70,7 +72,7 @@ pub fn render(f: &mut Frame, app: &AppState) -> Option<[FieldGeom; 2]> {
     if matches!(app.view, View::Help) {
         render_help(f, area, &app.keymap);
     }
-    edit_field_geom
+    (edit_field_geom, detail_area)
 }
 
 /// The tree column (indent + expand arrow + status icon + title + blocked

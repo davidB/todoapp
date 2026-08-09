@@ -295,6 +295,10 @@ pub struct AppState {
     /// mouse hit-testing needs this since `handle_event` runs *between*
     /// frames, without its own access to the layout `ui.rs` just computed.
     pub edit_field_geom: Option<[FieldGeom; 2]>,
+    /// Screen geometry of the details pane, refreshed the same way as
+    /// `edit_field_geom` — lets mouse-wheel scroll hit-test whether the
+    /// cursor is over the pane before scrolling it.
+    pub detail_area: Option<Rect>,
     /// Whether the (non-modal) details pane is toggled on (`Action::ViewDetail`).
     pub detail_shown: bool,
     /// Cached details for the current selection; `None` when the pane is shown
@@ -523,6 +527,7 @@ impl AppState {
             selection: None,
             mouse_select: None,
             edit_field_geom: None,
+            detail_area: None,
             detail_shown: false,
             detail: None,
             status_msg: None,
@@ -1188,6 +1193,23 @@ impl AppState {
     /// (previously mouse capture wasn't enabled at all, so selection was the
     /// terminal's own unconstrained native one; see `mod.rs`).
     fn handle_mouse_event(&mut self, m: MouseEvent, width: usize) -> bool {
+        if matches!(
+            m.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            if self
+                .detail_area
+                .is_some_and(|r| r.contains(Position::new(m.column, m.row)))
+                && let Some(d) = self.detail.as_mut()
+            {
+                d.scroll = if m.kind == MouseEventKind::ScrollUp {
+                    d.scroll.saturating_sub(DETAIL_SCROLL_STEP)
+                } else {
+                    d.scroll.saturating_add(DETAIL_SCROLL_STEP)
+                };
+            }
+            return true;
+        }
         let (Some(form), Some(geoms)) = (&mut self.edit_form, self.edit_field_geom) else {
             return true;
         };
@@ -2769,11 +2791,11 @@ pub(crate) mod tests {
         // between polls, to get real field geometry for hit-testing.
         let backend = ratatui::backend::TestBackend::new(TERM_WIDTH, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut geom = None;
+        let mut geoms = (None, None);
         terminal
-            .draw(|f| geom = crate::tui::ui::render(f, &app))
+            .draw(|f| geoms = crate::tui::ui::render(f, &app))
             .unwrap();
-        app.edit_field_geom = geom;
+        app.edit_field_geom = geoms.0;
         let notes_rect = app.edit_field_geom.unwrap()[NOTES_FIELD].rect;
 
         // Drag from the start of "hello world" (row 0) down past the field's
@@ -3369,6 +3391,36 @@ pub(crate) mod tests {
         app.handle_event(press_char('v'), TERM_WIDTH).await.unwrap();
         assert!(!app.detail_shown);
         assert!(app.detail.is_none());
+    }
+
+    /// Mouse-wheel scroll over the details pane scrolls it (hit-tested
+    /// against `detail_area`, refreshed by the run-loop after each render,
+    /// same mechanism as `edit_field_geom`); the same scroll elsewhere on
+    /// screen is a no-op.
+    #[tokio::test]
+    async fn mouse_scroll_over_details_pane_scrolls_it() {
+        let (mut app, _task_id) = new_app_with_task().await;
+        app.handle_event(press_char('v'), TERM_WIDTH).await.unwrap();
+        assert!(app.detail.is_some());
+
+        let inside = Rect::new(0, 20, TERM_WIDTH, 10);
+        app.detail_area = Some(inside);
+
+        app.handle_event(mouse_event(MouseEventKind::ScrollDown, 5, 25), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().scroll, DETAIL_SCROLL_STEP);
+
+        app.handle_event(mouse_event(MouseEventKind::ScrollUp, 5, 25), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().scroll, 0);
+
+        // Outside the pane's rect: no-op.
+        app.handle_event(mouse_event(MouseEventKind::ScrollDown, 5, 5), TERM_WIDTH)
+            .await
+            .unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().scroll, 0);
     }
 
     /// Build a fixed tree for the multi-select tests: a branch `P` with two
