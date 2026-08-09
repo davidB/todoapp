@@ -289,15 +289,18 @@ fn write_json(out: &mut Vec<u8>, v: &impl Serialize) -> anyhow::Result<()> {
 async fn children_of_or_roots<St: ComponentStore + TaskEntityStore>(
     svc: &Services<'_, St>,
     id: Option<String>,
-) -> Vec<Id> {
+) -> anyhow::Result<Vec<Id>> {
     match id {
-        Some(s) => svc
-            .children_of(&Id::new(s))
-            .await
-            .into_iter()
-            .map(|l| l.to)
-            .collect(),
-        None => svc.roots().await,
+        Some(s) => {
+            let id = svc.resolve_id(&s).await?;
+            Ok(svc
+                .children_of(&id)
+                .await
+                .into_iter()
+                .map(|l| l.to)
+                .collect())
+        }
+        None => Ok(svc.roots().await),
     }
 }
 
@@ -408,7 +411,10 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
             status,
             batch,
         } => {
-            let parent_id = parent.as_deref().map(Id::new);
+            let parent_id = match parent {
+                Some(p) => Some(svc.resolve_id(&p).await?),
+                None => None,
+            };
             if batch {
                 let text = String::from_utf8(req.stdin.clone()).context("stdin was not UTF-8")?;
                 let created = svc.batch_create(&text).await?;
@@ -424,7 +430,7 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
 
         Cmd::Ls { id, tree } => {
             if tree {
-                let root_ids = children_of_or_roots(svc, id).await;
+                let root_ids = children_of_or_roots(svc, id).await?;
                 let mut lines: Vec<TreeLine> = Vec::new();
                 let mut stack: Vec<(Id, usize)> = root_ids.into_iter().map(|id| (id, 0)).collect();
                 stack.reverse();
@@ -444,7 +450,7 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
                 }
                 write_json(out, &lines)?;
             } else {
-                let ids = children_of_or_roots(svc, id).await;
+                let ids = children_of_or_roots(svc, id).await?;
                 let mut tasks: Vec<TaskSnapshot> = Vec::new();
                 for id in ids {
                     if let Ok(t) = svc.snapshot(&id).await {
@@ -462,16 +468,19 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
             after,
         } => {
             let anchor = match (before, after) {
-                (Some(b), _) => Some(Anchor::Before(Id::new(b))),
-                (_, Some(a)) => Some(Anchor::After(Id::new(a))),
+                (Some(b), _) => Some(Anchor::Before(svc.resolve_id(&b).await?)),
+                (_, Some(a)) => Some(Anchor::After(svc.resolve_id(&a).await?)),
                 _ => None,
             };
-            svc.move_task(&Id::new(id), &Id::new(to), anchor).await?;
+            let id = svc.resolve_id(&id).await?;
+            let to = svc.resolve_id(&to).await?;
+            svc.move_task(&id, &to, anchor).await?;
             write_json(out, &serde_json::json!({"ok": true}))?;
         }
 
         Cmd::Rm { id, recursive } => {
-            svc.delete_task(&Id::new(id), recursive).await?;
+            let id = svc.resolve_id(&id).await?;
+            svc.delete_task(&id, recursive).await?;
             write_json(out, &serde_json::json!({"ok": true}))?;
         }
 
@@ -479,17 +488,21 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
             if kind != "blocks" {
                 anyhow::bail!("only --kind blocks is supported");
             }
-            svc.block(&Id::new(from), &Id::new(to)).await?;
+            let from = svc.resolve_id(&from).await?;
+            let to = svc.resolve_id(&to).await?;
+            svc.block(&from, &to).await?;
             write_json(out, &serde_json::json!({"ok": true}))?;
         }
 
         Cmd::Assign { id, actor } => {
-            let task = svc.assign(&Id::new(id), Id::new(actor)).await?;
+            let id = svc.resolve_id(&id).await?;
+            let task = svc.assign(&id, Id::new(actor)).await?;
             write_json(out, &task)?;
         }
 
         Cmd::Claim { id, actor } => {
-            let task = svc.claim(&Id::new(id), Id::new(actor)).await?;
+            let id = svc.resolve_id(&id).await?;
+            let task = svc.claim(&id, Id::new(actor)).await?;
             write_json(out, &task)?;
         }
 
@@ -501,7 +514,7 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
             due,
             recurrence,
         } => {
-            let id = Id::new(id);
+            let id = svc.resolve_id(&id).await?;
             let mut task = svc.snapshot(&id).await?;
             if let Some(t) = title {
                 task = svc.set_title(&id, t).await?;
@@ -545,7 +558,7 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
         }
 
         Cmd::Tag { id, tags } => {
-            let id = Id::new(id);
+            let id = svc.resolve_id(&id).await?;
             let mut task = svc.snapshot(&id).await?;
             for tag in tags {
                 task = svc.add_tag(&id, tag).await?;
@@ -554,7 +567,7 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
         }
 
         Cmd::Show { id } => {
-            let id = Id::new(id);
+            let id = svc.resolve_id(&id).await?;
             let task = svc.snapshot(&id).await?;
             let children = {
                 let mut cs = Vec::new();
@@ -582,14 +595,15 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
         }
 
         Cmd::Context { id } => {
+            let id = svc.resolve_id(&id).await?;
             let md = svc
-                .context_md(&Id::new(id), &todoapp_config::workspace_overrides())
+                .context_md(&id, &todoapp_config::workspace_overrides())
                 .await?;
             write!(out, "{md}")?;
         }
 
         Cmd::Note { id, text, actor } => {
-            let id = Id::new(id);
+            let id = svc.resolve_id(&id).await?;
             let task = svc.snapshot(&id).await?;
             let stamp = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M");
             let entry = format!("---\n{actor} {stamp}\n{text}");
@@ -632,7 +646,10 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
             let within = if here {
                 Some(here_root(svc, &req.cwd).await?)
             } else {
-                under.map(Id::new)
+                match under {
+                    Some(u) => Some(svc.resolve_id(&u).await?),
+                    None => None,
+                }
             };
             let hits = svc
                 .evaluate(&Query {
@@ -660,7 +677,10 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
             let within = if here {
                 Some(here_root(svc, &req.cwd).await?)
             } else {
-                under.map(Id::new)
+                match under {
+                    Some(u) => Some(svc.resolve_id(&u).await?),
+                    None => None,
+                }
             };
             let hits = if claimable {
                 // clap's `requires` already enforces --as; context is belt-and-braces
@@ -693,7 +713,10 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
         }
 
         Cmd::Export { id, format } => {
-            let root = id.map(Id::new);
+            let root = match id {
+                Some(i) => Some(svc.resolve_id(&i).await?),
+                None => None,
+            };
             match format {
                 FormatArg::Md => {
                     let md = if let Some(id) = &root {
@@ -752,11 +775,7 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
                     Some(task.id)
                 }
                 Some("root") => Some(Id::root()),
-                Some(other) => {
-                    let id = Id::new(other);
-                    svc.snapshot(&id).await?; // fail fast with a clear "not found" if bogus
-                    Some(id)
-                }
+                Some(other) => Some(svc.resolve_id(other).await?),
             };
             match fmt {
                 FormatArg::Md => {
@@ -791,7 +810,7 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
                         .map_or_else(|| "workspace".into(), |n| n.to_string_lossy().into_owned())
                 });
                 let root_id = match root {
-                    Some(id) => Id::new(id),
+                    Some(id) => svc.resolve_id(&id).await?,
                     None => svc.create(name.clone(), None, Status::Todo, []).await?.id,
                 };
                 let ws = Workspace {
@@ -824,8 +843,9 @@ async fn dispatch<St: ComponentStore + TaskEntityStore>(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            let id = svc.resolve_id(&id).await?;
             let task = svc
-                .add_attachment_from_bytes(&Id::new(id), title, bytes, None)
+                .add_attachment_from_bytes(&id, title, bytes, None)
                 .await?;
             write_json(out, &task)?;
         }
@@ -891,6 +911,37 @@ mod tests {
         let roots = json(&ls);
         assert_eq!(roots.as_array().unwrap().len(), 1);
         assert_eq!(roots[0]["id"], id);
+    }
+
+    #[tokio::test]
+    async fn show_resolves_a_short_id_prefix() {
+        let store = TursoStore::open_memory().await;
+        let (clock, ids) = (SystemClock, UlidGen);
+        let svc = make_svc(&store, &clock, &ids);
+        let cwd = PathBuf::from("/");
+
+        let add = run_command(
+            &svc,
+            &req(
+                Cmd::Add {
+                    title: Some("short id lookup".into()),
+                    parent: None,
+                    tags: vec![],
+                    status: StatusArg::Todo,
+                    batch: false,
+                },
+                cwd.clone(),
+                vec![],
+            ),
+        )
+        .await;
+        let created = json(&add);
+        let id = created["id"].as_str().unwrap().to_string();
+        let prefix = id[..6].to_string();
+
+        let show = run_command(&svc, &req(Cmd::Show { id: prefix }, cwd, vec![])).await;
+        let shown = json(&show);
+        assert_eq!(shown["id"], id);
     }
 
     #[tokio::test]
